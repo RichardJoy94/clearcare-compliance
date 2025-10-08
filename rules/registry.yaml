@@ -1,0 +1,29 @@
+# ClearCare Compliance Rules Registry
+# This file defines the validation rules for compliance data
+
+# Required columns that must be present in the dataset
+required_columns:
+  - code
+  - code_system
+  - gross_price
+  - cash_price
+  - date
+
+# Maximum number of days for date freshness (540 days = ~18 months)
+date_freshness_max_days: 540
+
+# Business rule: cash price should be less than or equal to gross price
+cash_leq_gross: true
+
+# Business rule: all prices should be non-negative
+non_negative_prices: true
+
+# Additional validation rules can be added here
+# Example:
+# price_range:
+#   min: 0.01
+#   max: 999999.99
+# 
+# code_format:
+#   pattern: "^[A-Z0-9]{3,10}$"
+#   description: "Codes should be 3-10 characters, uppercase letters and numbers only"
