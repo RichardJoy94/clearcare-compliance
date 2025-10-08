@@ -233,11 +233,16 @@ async def generate_pack(run_id: str):
     # Generate CSV summary
     csv_content = "rule,status,message\n"
     for check in validation_data.get('checks', []):
-        csv_content += f'"{check.get("rule", "")}","{check.get("status", "")}","{check.get("message", "").replace('"', '""')}"\n'
-    
+        csv_content += (
+            f"\"{check.get('rule', '')}\","
+            f"\"{check.get('status', '')}\","
+            f"\"{check.get('message', '').replace('\"', '\"\"')}\"\n"
+        )
+
     csv_path = os.path.join(EV_DIR, f"{run_id}.csv")
     with open(csv_path, "w", encoding="utf-8") as f:
         f.write(csv_content)
+
 
     # pack zip in-memory
     mem = io.BytesIO()
