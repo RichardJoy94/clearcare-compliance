@@ -1,0 +1,20 @@
+
+sequenceDiagram
+    participant A as Admin
+    participant API as ComplianceAPI
+    participant D as Document
+    participant EP as EvidencePack
+    participant CR as ComplianceRun
+    A->>API: upload_document(document)
+    API->>D: __init__(id, name, content)
+    D-->>API: return document
+    A->>API: validate_data(data)
+    API-->>A: return validation_result
+    A->>API: publish_data(data)
+    API->>CR: __init__(id, status, timestamp)
+    CR-->>API: return compliance_run
+    A->>API: generate_evidence_pack(run_id)
+    API->>EP: __init__(run_id, html_content, json_data, csv_data)
+    EP->>EP: create_zip()
+    EP-->>API: return evidence_pack_path
+    API-->>A: return evidence_pack_path

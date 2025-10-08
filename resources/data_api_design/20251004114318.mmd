@@ -1,0 +1,31 @@
+
+classDiagram
+    class ComplianceAPI {
+        +upload_document(document: UploadFile) str
+        +validate_data(data: dict) bool
+        +publish_data(data: dict) str
+        +generate_evidence_pack(run_id: str) str
+    }
+    class Document {
+        -id: str
+        -name: str
+        -content: bytes
+        +__init__(id: str, name: str, content: bytes)
+    }
+    class EvidencePack {
+        -run_id: str
+        -html_content: str
+        -json_data: dict
+        -csv_data: str
+        +__init__(run_id: str, html_content: str, json_data: dict, csv_data: str)
+        +create_zip() str
+    }
+    class ComplianceRun {
+        -id: str
+        -status: str
+        -timestamp: datetime
+        +__init__(id: str, status: str, timestamp: datetime)
+    }
+    ComplianceAPI --> Document
+    ComplianceAPI --> EvidencePack
+    ComplianceAPI --> ComplianceRun
