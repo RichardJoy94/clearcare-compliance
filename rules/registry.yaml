@@ -27,3 +27,4 @@ non_negative_prices: true
 # code_format:
 #   pattern: "^[A-Z0-9]{3,10}$"
 #   description: "Codes should be 3-10 characters, uppercase letters and numbers only"
+

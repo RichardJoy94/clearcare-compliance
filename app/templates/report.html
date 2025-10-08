@@ -143,33 +143,44 @@
         <div class="summary">
             <h2>Validation Summary</h2>
             <div class="summary-grid">
+                {% if csv_validation %}
                 <div class="summary-item">
-                    <h3>Total Rows</h3>
-                    <div class="value">{{ total_rows }}</div>
+                    <h3>CSV Total Rows</h3>
+                    <div class="value">{{ csv_validation.total_rows or 0 }}</div>
                 </div>
+                {% endif %}
+                {% if json_validation %}
+                <div class="summary-item">
+                    <h3>JSON Schema Type</h3>
+                    <div class="value">{{ json_validation.detected_schema_type or 'Unknown' }}</div>
+                </div>
+                {% endif %}
                 <div class="summary-item">
                     <h3>Total Checks</h3>
-                    <div class="value">{{ summary.total_checks }}</div>
+                    <div class="value">{{ combined_summary.total_checks }}</div>
                 </div>
                 <div class="summary-item">
                     <h3>Passed</h3>
-                    <div class="value" style="color: #27ae60;">{{ summary.passed }}</div>
+                    <div class="value" style="color: #27ae60;">{{ combined_summary.passed }}</div>
                 </div>
                 <div class="summary-item">
                     <h3>Failed</h3>
-                    <div class="value" style="color: #e74c3c;">{{ summary.failed }}</div>
+                    <div class="value" style="color: #e74c3c;">{{ combined_summary.failed }}</div>
                 </div>
-                {% if summary.errors > 0 %}
+                {% if combined_summary.errors > 0 %}
                 <div class="summary-item">
                     <h3>Errors</h3>
-                    <div class="value" style="color: #f39c12;">{{ summary.errors }}</div>
+                    <div class="value" style="color: #f39c12;">{{ combined_summary.errors }}</div>
                 </div>
                 {% endif %}
             </div>
         </div>
 
         <div class="checks-section">
-            <h2>Rule Validation Results</h2>
+            <h2>Validation Results</h2>
+            
+            {% if csv_validation and csv_validation.checks %}
+            <h3>CSV Rule Validation</h3>
             <table class="checks-table">
                 <thead>
                     <tr>
@@ -180,7 +191,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% for check in checks %}
+                    {% for check in csv_validation.checks %}
                     <tr>
                         <td><strong>{{ check.rule }}</strong></td>
                         <td>
@@ -200,6 +211,72 @@
                     {% endfor %}
                 </tbody>
             </table>
+            {% endif %}
+
+            {% if json_validation %}
+            <h3>JSON Schema Validation</h3>
+            <table class="checks-table">
+                <thead>
+                    <tr>
+                        <th>Validation Type</th>
+                        <th>Status</th>
+                        <th>Message</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Schema Detection</strong></td>
+                        <td>
+                            {% if json_validation.detected_schema_type != 'unknown' %}
+                            <span class="status-badge status-pass">pass</span>
+                            {% else %}
+                            <span class="status-badge status-fail">fail</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if json_validation.detected_schema_type != 'unknown' %}
+                            Detected schema type: {{ json_validation.detected_schema_type }}
+                            {% else %}
+                            Could not detect schema type
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="details">Schema Type: {{ json_validation.detected_schema_type or 'Unknown' }}</div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td><strong>Schema Validation</strong></td>
+                        <td>
+                            {% if json_validation.schema_validation.valid %}
+                            <span class="status-badge status-pass">pass</span>
+                            {% else %}
+                            <span class="status-badge status-fail">fail</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if json_validation.schema_validation.valid %}
+                            JSON validates against {{ json_validation.schema_validation.schema_type }} schema
+                            {% else %}
+                            JSON validation failed
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if json_validation.schema_validation.errors %}
+                            <div class="details">
+                                {% for error in json_validation.schema_validation.errors %}
+                                <strong>Error:</strong> {{ error.message }}<br>
+                                <strong>Path:</strong> {{ error.path }}<br>
+                                {% endfor %}
+                            </div>
+                            {% else %}
+                            <em>No validation errors</em>
+                            {% endif %}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+            {% endif %}
         </div>
 
         <div class="footer">
@@ -209,3 +286,4 @@
     </div>
 </body>
 </html>
+

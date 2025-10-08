@@ -225,3 +225,4 @@ def run_rules(parquet_path: str, registry_path: str) -> Dict[str, Any]:
                 "errors": 1
             }
         }
+
