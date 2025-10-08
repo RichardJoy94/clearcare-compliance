@@ -1,48 +1,125 @@
-## workspace/clearcare_compliance/frontend/pages/upload.js
+import { useState } from 'react';
 
-import React, { useState } from 'react';
-import axios from 'axios';
+const API = (process.env.NEXT_PUBLIC_API_URL || '').replace(/\/$/, '');
 
-const UploadPage = () => {
-    const [document, setDocument] = useState<File | null>(null);
-    const [uploadStatus, setUploadStatus] = useState<string>('');
-    
-    const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
-        const files = event.target.files;
-        if (files && files.length > 0) {
-            setDocument(files[0]);
+export default function UploadPage() {
+  const [file, setFile] = useState(null);
+  const [runId, setRunId] = useState('');
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  async function handleUpload(e) {
+    e.preventDefault();
+    setError('');
+    setResult(null);
+
+    if (!file) {
+      setError('Please choose a .csv file.');
+      return;
+    }
+
+    try {
+      setStatus('Uploading…');
+      const fd = new FormData();
+      fd.append('document', file);
+
+      const res = await fetch(`${API}/upload`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+
+      setRunId(data.run_id);
+      setStatus('Uploaded ✓');
+    } catch (err) {
+      setStatus('');
+      setError(String(err.message || err));
+    }
+  }
+
+  async function handleValidate() {
+    if (!runId) return;
+    setError('');
+    try {
+      setStatus('Validating…');
+      const res = await fetch(`${API}/validate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: runId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+
+      setResult(data);
+      setStatus('Validated ✓');
+    } catch (err) {
+      setStatus('');
+      setError(String(err.message || err));
+    }
+  }
+
+  async function handleDownload() {
+    if (!runId) return;
+    // /generate_evidence_pack returns either a zip file directly OR JSON with a presigned URL.
+    const url = `${API}/generate_evidence_pack/${runId}`;
+    try {
+      const head = await fetch(url, { method: 'GET' });
+      const contentType = head.headers.get('content-type') || '';
+
+      if (contentType.includes('application/json')) {
+        const j = await head.clone().json();
+        const presigned = j.s3_presigned_url;
+        if (presigned) {
+          window.open(presigned, '_blank');
+          return;
         }
-    };
+      }
 
-    const handleUpload = async (): Promise<void> => {
-        if (!document) {
-            setUploadStatus('Please select a document to upload.');
-            return;
-        }
+      const res = await fetch(url);
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${runId}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+  }
 
-        const formData = new FormData();
-        formData.append('document', document);
+  return (
+    <main style={{ padding: 24, fontFamily: 'system-ui, sans-serif' }}>
+      <h1>Upload CSV</h1>
 
-        try {
-            const response = await axios.post('/upload', formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
-            });
-            setUploadStatus(`Document uploaded successfully. Document ID: ${response.data}`);
-        } catch (error) {
-            setUploadStatus(`Error uploading document: ${error.response?.data?.detail || error.message}`);
-        }
-    };
+      <form onSubmit={handleUpload} style={{ marginBottom: 16 }}>
+        <input
+          type="file"
+          accept=".csv"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+        />
+        <button type="submit" style={{ marginLeft: 8 }} disabled={!file}>
+          Upload
+        </button>
+      </form>
 
-    return (
-        <div>
-            <h1>Upload Document</h1>
-            <input type="file" onChange={handleFileChange} />
-            <button onClick={handleUpload}>Upload Document</button>
-            <p>{uploadStatus}</p>
+      {runId && (
+        <div style={{ marginBottom: 16 }}>
+          <div>run_id: <code>{runId}</code></div>
+          <button onClick={handleValidate}>Validate</button>
+          <button onClick={handleDownload} style={{ marginLeft: 8 }}>
+            Download Evidence Pack
+          </button>
         </div>
-    );
-};
+      )}
 
-export default UploadPage;
+      {status && <p>Status: {status}</p>}
+      {error && <pre style={{ color: 'crimson' }}>{error}</pre>}
+      {result && (
+        <pre style={{ background: '#111', color: '#0f0', padding: 12 }}>
+          {JSON.stringify(result, null, 2)}
+        </pre>
+      )}
+    </main>
+  );
+}
