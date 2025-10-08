@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import os, uuid, shutil, json, zipfile, io, datetime as dt
 import polars as pl
+import csv
 from jinja2 import Environment, FileSystemLoader
 
 # Optional S3 (only used if creds are present & work)
@@ -230,19 +231,21 @@ async def generate_pack(run_id: str):
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
 
-    # Generate CSV summary
-    csv_content = "rule,status,message\n"
-    for check in validation_data.get('checks', []):
-        csv_content += (
-            f"\"{check.get('rule', '')}\","
-            f"\"{check.get('status', '')}\","
-            f"\"{check.get('message', '').replace('\"', '\"\"')}\"\n"
-        )
+    # Generate CSV summary (use csv module to handle quoting safely)
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(["rule", "status", "message"])
+    for check in validation_data.get("checks", []):
+        writer.writerow([
+            check.get("rule", ""),
+            check.get("status", ""),
+            check.get("message", ""),
+        ])
+    csv_content = buf.getvalue()
 
     csv_path = os.path.join(EV_DIR, f"{run_id}.csv")
-    with open(csv_path, "w", encoding="utf-8") as f:
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
         f.write(csv_content)
-
 
     # pack zip in-memory
     mem = io.BytesIO()
