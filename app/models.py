@@ -48,6 +48,7 @@ class Run(SQLModel, table=True):
     schema_ok: Optional[bool] = Field(default=None, description="JSON schema validation result")
     rules_passed: int = Field(default=0, description="Number of rules that passed")
     rules_failed: int = Field(default=0, description="Number of rules that failed")
+    cms_csv_ok: Optional[bool] = Field(default=None, description="CMS CSV validation result")
     
     # Status and timestamps
     status: RunStatus = Field(default=RunStatus.UPLOADED, description="Current status of the run")

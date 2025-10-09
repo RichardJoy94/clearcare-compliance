@@ -1,0 +1,36 @@
+# CMS CSV header expectations (baseline; extend as needed)
+required:
+  tall:
+    - billing_code_type
+    - billing_code
+    - description
+    - standard_charge       # negotiated / gross / discounted depending on row; numeric
+    - payer                 # plan/provider identification column in tall format
+  wide:
+    base:
+      - billing_code_type
+      - billing_code
+      - description
+    # At least one payer/plan column that includes a pipe '|' in its name (e.g., "Aetna|Silver HMO")
+    # CMS suggests payer and plan separated by "|".
+preamble:
+  required_labels:
+    - mrf date
+    - cms template version
+encoding:
+  must_be: utf-8
+rules:
+  description_present: true
+  coding_present: true             # requires billing_code_type + billing_code
+  charge_value_types:
+    allow:
+      - dollar                     # numeric (gross/discounted/negotiated in dollars)
+      - percentage                 # algorithmic; then we need an estimated allowed amount in dollars
+      - algorithm
+  estimated_allowed_amount:
+    column_names:
+      - estimated_allowed_amount
+      - est_allowed_amount
+      - estimated_allowed_dollars
+  wide_layout:
+    payer_plan_separator: "|"      # enforce pipe in wide column headers

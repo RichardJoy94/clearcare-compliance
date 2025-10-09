@@ -163,6 +163,89 @@
             color: #7f8c8d;
             text-align: center;
         }
+        
+        /* CMS CSV Section Styles */
+        .cms-csv-section {
+            background: #f0f8ff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            border-left: 4px solid #3498db;
+        }
+        .cms-csv-section h2 {
+            color: #2c3e50;
+            margin-top: 0;
+        }
+        .cms-csv-info {
+            display: grid;
+            gap: 20px;
+        }
+        .layout-badge {
+            font-size: 1.2em;
+        }
+        .badge {
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .badge-info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        .badge-danger {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .preamble-table {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+        }
+        .metadata-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        .metadata-table th,
+        .metadata-table td {
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        .metadata-table th {
+            background: #f8f9fa;
+            font-weight: bold;
+        }
+        .header-info {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+        }
+        .structure-validation,
+        .data-rules-validation {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+        }
+        .validation-result {
+            margin-top: 10px;
+        }
+        .error-list,
+        .alert-list {
+            margin-top: 10px;
+            padding-left: 20px;
+        }
+        .error-list li {
+            color: #dc3545;
+        }
+        .alert-list li {
+            color: #856404;
+        }
     </style>
 </head>
 <body>
@@ -175,6 +258,96 @@
             <p class="subtitle">Profile: <strong>{{ csv_validation.profile_description or csv_validation.profile }}</strong></p>
             {% endif %}
         </div>
+
+        {% if cms_csv %}
+        <div class="cms-csv-section">
+            <h2>CMS CSV Validation</h2>
+            <div class="cms-csv-info">
+                <div class="layout-badge">
+                    <strong>Layout:</strong> 
+                    <span class="badge badge-{{ 'success' if cms_csv.layout == 'tall' else 'info' }}">{{ cms_csv.layout|title }}</span>
+                </div>
+                
+                {% if cms_csv.metadata %}
+                <div class="preamble-table">
+                    <h3>Preamble Metadata</h3>
+                    <table class="metadata-table">
+                        <thead>
+                            <tr>
+                                <th>Label</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for key, value in cms_csv.metadata.items() %}
+                            <tr>
+                                <td>{{ key }}</td>
+                                <td>{{ value }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+                
+                <div class="header-info">
+                    <h3>Header Information</h3>
+                    <p><strong>Header Row Index:</strong> {{ cms_csv.header_row }}</p>
+                    <p><strong>First 20 Headers:</strong> {{ cms_csv.headers[:20]|join(', ') }}</p>
+                </div>
+                
+                {% if cms_csv.structure %}
+                <div class="structure-validation">
+                    <h3>Structure Validation</h3>
+                    <div class="validation-result">
+                        <span class="badge badge-{{ 'success' if cms_csv.structure.ok else 'danger' }}">
+                            {{ 'PASS' if cms_csv.structure.ok else 'FAIL' }}
+                        </span>
+                        {% if cms_csv.structure.errors %}
+                        <ul class="error-list">
+                            {% for error in cms_csv.structure.errors %}
+                            <li>{{ error.rule }}: {{ error.message }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                        {% if cms_csv.structure.alerts %}
+                        <ul class="alert-list">
+                            {% for alert in cms_csv.structure.alerts %}
+                            <li>{{ alert.rule }}: {{ alert.message }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+                
+                {% if cms_csv.data_rules %}
+                <div class="data-rules-validation">
+                    <h3>Data Rules Validation</h3>
+                    <div class="validation-result">
+                        <span class="badge badge-{{ 'success' if cms_csv.data_rules.ok else 'danger' }}">
+                            {{ 'PASS' if cms_csv.data_rules.ok else 'FAIL' }}
+                        </span>
+                        {% if cms_csv.data_rules.errors %}
+                        <ul class="error-list">
+                            {% for error in cms_csv.data_rules.errors %}
+                            <li>{{ error.rule }}: {{ error.message }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                        {% if cms_csv.data_rules.alerts %}
+                        <ul class="alert-list">
+                            {% for alert in cms_csv.data_rules.alerts %}
+                            <li>{{ alert.rule }}: {{ alert.message }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
 
         <div class="summary">
             <h2>Validation Summary</h2>

@@ -112,7 +112,8 @@ def get_run(session: Session, run_id: str) -> Optional[Run]:
 def update_run_status(session: Session, run_id: str, status: RunStatus, 
                      schema_ok: Optional[bool] = None, 
                      rules_passed: Optional[int] = None, 
-                     rules_failed: Optional[int] = None) -> Optional[Run]:
+                     rules_failed: Optional[int] = None,
+                     cms_csv_ok: Optional[bool] = None) -> Optional[Run]:
     """Update the status and validation results of a run."""
     run = session.get(Run, uuid.UUID(run_id))
     if run:
@@ -123,6 +124,8 @@ def update_run_status(session: Session, run_id: str, status: RunStatus,
             run.rules_passed = rules_passed
         if rules_failed is not None:
             run.rules_failed = rules_failed
+        if cms_csv_ok is not None:
+            run.cms_csv_ok = cms_csv_ok
         run.updated_at = dt.datetime.utcnow()
         session.add(run)
         session.commit()
@@ -343,6 +346,20 @@ async def validate_sync(run_id: str, session: Session) -> dict:
             actual_cols = parquet_columns(parquet_path)
             print(f"[DEBUG] /validate - run_id: {run_id}, parquet_path: {parquet_path}, len(actual_cols): {len(actual_cols)}, detected_profile: {profile}")
             
+            # CMS CSV analysis
+            from app.cms_csv import analyze_cms_csv
+            from pathlib import Path
+            csv_path = Path(parquet_path.replace('.parquet', '.csv'))
+            if csv_path.exists():
+                cms_csv_result = analyze_cms_csv(csv_path, Path(parquet_path))
+                validation_results["cms_csv"] = cms_csv_result
+                
+                # Optionally lift some summary flags
+                validation_results["combined_summary"]["cms_csv_ok"] = bool(cms_csv_result.get("ok"))
+                # Update profile to include layout info
+                if cms_csv_result.get("layout"):
+                    validation_results["combined_summary"]["profile"] = f"cms_csv_{cms_csv_result.get('layout')}"
+            
             registry_path = os.path.join(os.path.dirname(__file__), "..", "rules", "registry.yaml")
             if os.path.exists(registry_path):
                 from app.validator import run_rules
@@ -406,6 +423,11 @@ async def validate_sync(run_id: str, session: Session) -> dict:
     if json_validation and json_validation.get("schema_validation"):
         schema_ok = json_validation["schema_validation"].get("valid")
     
+    # Extract CMS CSV validation result
+    cms_csv_ok = None
+    if validation_results.get("cms_csv"):
+        cms_csv_ok = validation_results["cms_csv"].get("ok")
+    
     # Update run in database
     update_run_status(
         session, 
@@ -413,7 +435,8 @@ async def validate_sync(run_id: str, session: Session) -> dict:
         final_status,
         schema_ok=schema_ok,
         rules_passed=rules_passed,
-        rules_failed=rules_failed
+        rules_failed=rules_failed,
+        cms_csv_ok=cms_csv_ok
     )
     
     # Save combined validation evidence

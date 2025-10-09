@@ -162,9 +162,11 @@ export default function RunsPage() {
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>Run ID</th>
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>Filename</th>
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>Status</th>
+                   <th style={{ padding: 8, border: '1px solid #ddd' }}>Profile</th>
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>File Types</th>
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>CSV Rules</th>
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>JSON Schema</th>
+                   <th style={{ padding: 8, border: '1px solid #ddd' }}>CMS CSV</th>
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>Created</th>
                    <th style={{ padding: 8, border: '1px solid #ddd' }}>Actions</th>
                  </tr>
@@ -189,6 +191,14 @@ export default function RunsPage() {
                     else jsonBadge = '-';
                   }
                   
+                  // Determine CMS CSV validation badge from database
+                  let cmsCsvBadge = '-';
+                  if (r.has_csv && r.cms_csv_ok !== null) {
+                    if (r.cms_csv_ok === true) cmsCsvBadge = 'PASS';
+                    else if (r.cms_csv_ok === false) cmsCsvBadge = 'FAIL';
+                    else cmsCsvBadge = '-';
+                  }
+                  
                   return (
                     <tr key={r.id}>
                       <td style={{ padding: 8, border: '1px solid #ddd' }}>
@@ -199,6 +209,11 @@ export default function RunsPage() {
                       </td>
                       <td style={{ padding: 8, border: '1px solid #ddd', textTransform: 'capitalize' }}>
                         {String(r.status || '').replace('_', ' ')}
+                      </td>
+                      <td style={{ padding: 8, border: '1px solid #ddd' }}>
+                        <span style={{ fontSize: '12px', color: '#666' }}>
+                          {r.profile || '—'}
+                        </span>
                       </td>
                       <td style={{ padding: 8, border: '1px solid #ddd' }}>
                         <div style={{ display: 'flex', gap: '4px' }}>
@@ -214,6 +229,11 @@ export default function RunsPage() {
                       <td style={{ padding: 8, border: '1px solid #ddd' }}>
                         <span style={getBadgeStyle(jsonBadge)}>
                           {jsonBadge}
+                        </span>
+                      </td>
+                      <td style={{ padding: 8, border: '1px solid #ddd' }}>
+                        <span style={getBadgeStyle(cmsCsvBadge)}>
+                          {cmsCsvBadge}
                         </span>
                       </td>
                       <td style={{ padding: 8, border: '1px solid #ddd' }}>
