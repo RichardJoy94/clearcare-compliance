@@ -17,11 +17,45 @@ from app.validator_utils import load_run_meta, parquet_columns
 
 
 def validate_csv_run(run_id: str, parquet_path: str | None, raw_csv_path: str | None):
-    """Validate CSV run using Parquet schema columns (preferred) or header sniffer (fallback)."""
+    """Validate CSV run using CMS CSV analyzer (preferred) or Parquet schema columns (fallback)."""
     # Load meta, prefer parquet_path from meta
     meta = load_run_meta(run_id) or {}
     parquet_path = parquet_path or meta.get("parquet_path")
     raw_csv_path = raw_csv_path or meta.get("csv_path")
+    
+    # Try CMS CSV analyzer first (for proper preamble detection)
+    if raw_csv_path and os.path.exists(raw_csv_path):
+        try:
+            from app.cms_csv import analyze_cms_csv
+            from pathlib import Path
+            
+            # Create a temporary parquet path if none exists
+            temp_parquet_path = parquet_path
+            if not temp_parquet_path:
+                temp_parquet_path = raw_csv_path.replace('.csv', '.parquet')
+            
+            cms_result = analyze_cms_csv(Path(raw_csv_path), Path(temp_parquet_path))
+            
+            # Use CMS CSV results if successful
+            if cms_result.get("ok") is not None:  # CMS analysis completed
+                actual_cols = cms_result.get("present_columns", [])
+                detected_profile = f"cms_csv_{cms_result.get('layout', 'unknown')}"
+                header_row = cms_result.get("header_row", 0)
+                headers = cms_result.get("headers", [])
+                
+                result = {
+                    "profile": detected_profile,
+                    "detected_profile": detected_profile,
+                    "detected_header_row": header_row,
+                    "detected_headers": headers,
+                    "present_columns": actual_cols,
+                    "cms_csv_result": cms_result  # Include full CMS results
+                }
+                return result
+        except Exception as e:
+            print(f"Warning: CMS CSV analysis failed: {e}")
+    
+    # Fallback to original logic
     header_row = meta.get("header_row")
     headers = meta.get("headers")
     
@@ -41,24 +75,14 @@ def validate_csv_run(run_id: str, parquet_path: str | None, raw_csv_path: str | 
     
     # Detect profile using REAL columns
     detected_profile = detect_profile(actual_cols)
-    mapping = map_to_internal(actual_cols)
-    
-    # --- Now run your rules, but ALWAYS use 'actual_cols' for the "present_columns" report ---
-    # 1) Header/required columns (profile-specific)
-    # - for cms_csv: compare against cms required headers list
-    # - for simple_csv: compare against ["code", "code_system", "gross_price", "cash_price","date"]
-    # 2) Common rules: when a mapped internal column is None/missing, skip that rule
     
     result = {
         "profile": detected_profile,
         "detected_profile": detected_profile,
         "detected_header_row": header_row,
         "detected_headers": headers,
-        # ... existing timestamps/paths ...
+        "present_columns": actual_cols,
     }
-    
-    # include 'actual_cols' (limited) for transparency/debug
-    result["present_columns"] = actual_cols
     
     return result
 
@@ -688,7 +712,7 @@ def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["
         # Load the rules
         rules = load_rules_registry(registry_path)
         
-        # Use validate_csv_run to get actual columns from Parquet schema
+        # Use validate_csv_run to get actual columns (CMS CSV analyzer preferred)
         run_id = os.path.basename(parquet_path).replace('.parquet', '')
         csv_path = parquet_path.replace('.parquet', '.csv')
         csv_result = validate_csv_run(run_id, parquet_path, csv_path if os.path.exists(csv_path) else None)
@@ -698,6 +722,9 @@ def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["
         detected_profile = csv_result["detected_profile"]
         header_row = csv_result["detected_header_row"]
         headers = csv_result["detected_headers"]
+        
+        # Check if we have CMS CSV results
+        cms_csv_result = csv_result.get("cms_csv_result")
         
         # Load the Parquet file
         df = pl.read_parquet(parquet_path)
@@ -742,6 +769,10 @@ def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["
                 "errors": 0
             }
         }
+        
+        # Add CMS CSV information if available
+        if cms_csv_result:
+            results["cms_csv"] = cms_csv_result
         
         # Run all rule checks
         all_checks = []

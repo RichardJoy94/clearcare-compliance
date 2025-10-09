@@ -346,25 +346,20 @@ async def validate_sync(run_id: str, session: Session) -> dict:
             actual_cols = parquet_columns(parquet_path)
             print(f"[DEBUG] /validate - run_id: {run_id}, parquet_path: {parquet_path}, len(actual_cols): {len(actual_cols)}, detected_profile: {profile}")
             
-            # CMS CSV analysis
-            from app.cms_csv import analyze_cms_csv
-            from pathlib import Path
-            csv_path = Path(parquet_path.replace('.parquet', '.csv'))
-            if csv_path.exists():
-                cms_csv_result = analyze_cms_csv(csv_path, Path(parquet_path))
-                validation_results["cms_csv"] = cms_csv_result
-                
-                # Optionally lift some summary flags
-                validation_results["combined_summary"]["cms_csv_ok"] = bool(cms_csv_result.get("ok"))
-                # Update profile to include layout info
-                if cms_csv_result.get("layout"):
-                    validation_results["combined_summary"]["profile"] = f"cms_csv_{cms_csv_result.get('layout')}"
+            # CMS CSV analysis is now handled in the validator
             
             registry_path = os.path.join(os.path.dirname(__file__), "..", "rules", "registry.yaml")
             if os.path.exists(registry_path):
                 from app.validator import run_rules
                 csv_result = run_rules(parquet_path, registry_path, profile=profile)
                 validation_results["csv_validation"] = csv_result
+                
+                # Extract CMS CSV information from validator results
+                if csv_result.get("cms_csv"):
+                    validation_results["cms_csv"] = csv_result["cms_csv"]
+                    validation_results["combined_summary"]["cms_csv_ok"] = bool(csv_result["cms_csv"].get("ok"))
+                    if csv_result["cms_csv"].get("layout"):
+                        validation_results["combined_summary"]["profile"] = f"cms_csv_{csv_result['cms_csv'].get('layout')}"
                 
                 # Update combined summary
                 csv_summary = csv_result.get("summary", {})
