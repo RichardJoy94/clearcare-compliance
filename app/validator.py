@@ -13,6 +13,54 @@ from typing import Dict, Any, List, Optional, Literal
 # Import profile detection
 from app.profiles import detect_profile, map_to_internal, get_profile_description, validate_cms_headers
 from app.csv_header_sniffer import find_header_row, extract_header
+from app.validator_utils import load_run_meta, parquet_columns
+
+
+def validate_csv_run(run_id: str, parquet_path: str | None, raw_csv_path: str | None):
+    """Validate CSV run using Parquet schema columns (preferred) or header sniffer (fallback)."""
+    # Load meta, prefer parquet_path from meta
+    meta = load_run_meta(run_id) or {}
+    parquet_path = parquet_path or meta.get("parquet_path")
+    raw_csv_path = raw_csv_path or meta.get("csv_path")
+    header_row = meta.get("header_row")
+    headers = meta.get("headers")
+    
+    # Prefer Parquet schema for 'actual_cols'
+    actual_cols = []
+    if parquet_path:
+        actual_cols = parquet_columns(parquet_path)
+    
+    # If we have no Parquet or schema looks empty, fall back to sniffer
+    if not actual_cols and raw_csv_path:
+        # cheap re-sniff path
+        with open(raw_csv_path, "rb") as f:
+            head = f.read(150_000).decode("utf-8-sig", errors="ignore")
+        header_row = find_header_row(head)
+        headers = extract_header(raw_csv_path, header_row)
+        actual_cols = headers[:] if headers else []
+    
+    # Detect profile using REAL columns
+    detected_profile = detect_profile(actual_cols)
+    mapping = map_to_internal(actual_cols)
+    
+    # --- Now run your rules, but ALWAYS use 'actual_cols' for the "present_columns" report ---
+    # 1) Header/required columns (profile-specific)
+    # - for cms_csv: compare against cms required headers list
+    # - for simple_csv: compare against ["code", "code_system", "gross_price", "cash_price","date"]
+    # 2) Common rules: when a mapped internal column is None/missing, skip that rule
+    
+    result = {
+        "profile": detected_profile,
+        "detected_profile": detected_profile,
+        "detected_header_row": header_row,
+        "detected_headers": headers,
+        # ... existing timestamps/paths ...
+    }
+    
+    # include 'actual_cols' (limited) for transparency/debug
+    result["present_columns"] = actual_cols
+    
+    return result
 
 
 def load_rules_registry(registry_path: str) -> Dict[str, Any]:
@@ -50,9 +98,9 @@ def get_failing_rows(df: pl.DataFrame, condition: pl.Expr, max_rows: int = 5) ->
         return [{"error": f"Failed to extract failing rows: {str(e)}"}]
 
 
-def check_profile_headers(df: pl.DataFrame, profile: Literal["cms_csv", "simple_csv"], 
+def check_profile_headers(actual_cols: List[str], profile: Literal["cms_csv", "simple_csv"], 
                          rules: Dict, max_failing_rows: int) -> Dict:
-    """Check headers based on detected profile."""
+    """Check headers based on detected profile using actual columns from Parquet schema."""
     profile_config = rules.get("profiles", {}).get(profile, {})
     
     if profile == "cms_csv":
@@ -60,7 +108,7 @@ def check_profile_headers(df: pl.DataFrame, profile: Literal["cms_csv", "simple_
         required_headers = profile_config.get("required_headers", [])
         
         # Normalize both the actual headers and required headers for comparison
-        actual_headers = {h.lower().strip().replace(" ", "_").replace("-", "_") for h in df.columns}
+        actual_headers = {h.lower().strip().replace(" ", "_").replace("-", "_") for h in actual_cols}
         normalized_required = {h.lower().strip().replace(" ", "_").replace("-", "_") for h in required_headers}
         
         missing_headers = normalized_required - actual_headers
@@ -91,7 +139,7 @@ def check_profile_headers(df: pl.DataFrame, profile: Literal["cms_csv", "simple_
     else:
         # For simple CSV, check required_columns
         required_columns = profile_config.get("required_columns", [])
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        missing_columns = [col for col in required_columns if col not in actual_cols]
         
         if missing_columns:
             return {
@@ -101,7 +149,7 @@ def check_profile_headers(df: pl.DataFrame, profile: Literal["cms_csv", "simple_
                 "details": {
                     "profile": profile,
                     "missing_columns": missing_columns,
-                    "present_columns": df.columns,
+                    "present_columns": actual_cols,
                     "profile_description": get_profile_description(profile)
                 }
             }
@@ -640,32 +688,26 @@ def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["
         # Load the rules
         rules = load_rules_registry(registry_path)
         
-        # Re-open quickly for header detection
+        # Use validate_csv_run to get actual columns from Parquet schema
+        run_id = os.path.basename(parquet_path).replace('.parquet', '')
         csv_path = parquet_path.replace('.parquet', '.csv')
-        if os.path.exists(csv_path):
-            with open(csv_path, "rb") as f:
-                _text = f.read(150_000).decode("utf-8", errors="ignore")
-            
-            header_row = find_header_row(_text)
-            headers = extract_header(csv_path, header_row)
-            
-            # Very small profile hint (non-breaking): if we see CMS-like headers, call it "cms_csv"
-            hits = sum(1 for h in headers if h in ("billing_code", "billing_code_type", "description", "standard_charge"))
-            detected_profile = "cms_csv" if hits >= 3 else "simple_csv"
-        else:
-            headers = None
-            header_row = 0
-            detected_profile = None
+        csv_result = validate_csv_run(run_id, parquet_path, csv_path if os.path.exists(csv_path) else None)
+        
+        # Extract the actual columns and metadata
+        actual_cols = csv_result["present_columns"]
+        detected_profile = csv_result["detected_profile"]
+        header_row = csv_result["detected_header_row"]
+        headers = csv_result["detected_headers"]
         
         # Load the Parquet file
         df = pl.read_parquet(parquet_path)
         
-        # Detect profile if not provided
+        # Use the detected profile from actual columns
         if profile is None:
-            profile = detected_profile or detect_profile(df.columns)
+            profile = detected_profile
         
-        # Get column mapping for this profile
-        column_mapping = map_to_internal(df.columns, profile)
+        # Get column mapping for this profile using actual columns
+        column_mapping = map_to_internal(actual_cols, profile)
         
         # Create a mapped DataFrame with internal column names (for rule evaluation)
         mapped_df = df
@@ -704,8 +746,8 @@ def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["
         # Run all rule checks
         all_checks = []
         
-        # 1. Profile-aware header check
-        header_check = check_profile_headers(df, profile, rules, max_failing_rows)
+        # 1. Profile-aware header check using actual columns
+        header_check = check_profile_headers(actual_cols, profile, rules, max_failing_rows)
         all_checks.append(header_check)
         
         # Set schema_ok based on header validation

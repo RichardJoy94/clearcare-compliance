@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse, FileResponse
 import os, uuid, shutil, json, zipfile, io, datetime as dt
 import polars as pl
 import csv
+import pathlib
 from jinja2 import Environment, FileSystemLoader
 from typing import Optional, List
 from sqlmodel import Session, select
@@ -40,10 +41,12 @@ RAW_DIR = os.path.join(DATA_DIR, "raw")
 PARQUET_DIR = os.path.join(DATA_DIR, "parquet")
 JSON_DIR = os.path.join(DATA_DIR, "json")
 EV_DIR  = os.path.join(DATA_DIR, "evidence")
+RUNS_DIR = pathlib.Path(os.path.join(DATA_DIR, "runs"))
 os.makedirs(RAW_DIR, exist_ok=True)
 os.makedirs(PARQUET_DIR, exist_ok=True)
 os.makedirs(JSON_DIR, exist_ok=True)
 os.makedirs(EV_DIR,  exist_ok=True)
+RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Initialize Jinja2 environment
 jinja_env = Environment(loader=FileSystemLoader(os.path.join(os.path.dirname(__file__), 'templates')))
@@ -170,7 +173,7 @@ def stream_csv_to_parquet(local_csv_path: str, local_parquet_path: str) -> tuple
         local_parquet_path: Path for the output Parquet file
         
     Returns:
-        tuple: (Path to the created Parquet file, detected profile)
+        tuple: (Path to the created Parquet file, detected profile, header_row, headers)
     """
     try:
         # Use header sniffer to find the real header row
@@ -196,7 +199,7 @@ def stream_csv_to_parquet(local_csv_path: str, local_parquet_path: str) -> tuple
         # Write Parquet (keep existing sink/write behavior)
         df.write_parquet(local_parquet_path, compression="zstd")
         
-        return local_parquet_path, profile
+        return local_parquet_path, profile, header_row, headers
     except Exception as e:
         raise Exception(f"Failed to convert CSV to Parquet: {e}")
 
@@ -229,10 +232,21 @@ async def upload(document: UploadFile = File(...), session: Session = Depends(ge
         if file_type == 'csv':
             # CSV processing - convert to Parquet and detect profile
             local_parquet_path = os.path.join(PARQUET_DIR, f"{run_id}.parquet")
-            parquet_path, detected_profile = stream_csv_to_parquet(local_raw_path, local_parquet_path)
+            parquet_path, detected_profile, header_row, headers = stream_csv_to_parquet(local_raw_path, local_parquet_path)
             result["local_parquet_path"] = parquet_path
             result["profile"] = detected_profile
             has_csv = True
+            
+            # Persist header metadata for validation
+            meta = {
+                "run_id": run_id,
+                "csv_path": str(local_raw_path),
+                "parquet_path": str(parquet_path),
+                "header_row": header_row,
+                "headers": headers,
+            }
+            with open(RUNS_DIR / f"{run_id}.meta.json", "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False)
             
         elif file_type == 'json':
             # JSON processing - copy to JSON directory
@@ -324,6 +338,11 @@ async def validate_sync(run_id: str, session: Session) -> dict:
     # Validate CSV/Parquet if exists
     if os.path.exists(parquet_path):
         try:
+            # Debug logging for header detection fix
+            from app.validator_utils import parquet_columns
+            actual_cols = parquet_columns(parquet_path)
+            print(f"[DEBUG] /validate - run_id: {run_id}, parquet_path: {parquet_path}, len(actual_cols): {len(actual_cols)}, detected_profile: {profile}")
+            
             registry_path = os.path.join(os.path.dirname(__file__), "..", "rules", "registry.yaml")
             if os.path.exists(registry_path):
                 from app.validator import run_rules
