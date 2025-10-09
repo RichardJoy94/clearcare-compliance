@@ -35,6 +35,8 @@ def _try_parse_preamble(lines: List[str], spec: dict, max_scan: int = 20) -> Tup
     - row1 must contain >=2 items from preamble.required_labels
     """
     wanted = set(x.lower() for x in spec.get("preamble", {}).get("required_labels", []))
+    
+    # First try: Look for CMS preamble format (mrf date, cms template version)
     for i in range(min(max_scan, len(lines)-2)):
         r1, r2, r3 = lines[i], lines[i+1], lines[i+2]
         try:
@@ -48,6 +50,35 @@ def _try_parse_preamble(lines: List[str], spec: dict, max_scan: int = 20) -> Tup
         hits = sum(1 for k in wanted if k in c1)
         if hits >= 2 and len(c1) == len(c2):
             # build metadata by pairing c1->c2 for keys we know or any non-empty key
+            md = {}
+            for k, v in zip(c1, c2):
+                if k and v:
+                    md[k] = v
+            # treat c3 as true header row
+            return (i+2, md, c1, c2)
+    
+    # Second try: Look for hospital metadata format (more flexible)
+    for i in range(min(max_scan, len(lines)-2)):
+        r1, r2, r3 = lines[i], lines[i+1], lines[i+2]
+        try:
+            c1 = [c.strip().lower() for c in _csv_cells(r1)]
+            c2 = [c.strip() for c in _csv_cells(r2)]
+            c3 = [c.strip().lower() for c in _csv_cells(r3)]
+        except Exception:
+            continue
+        if not c1 or not c2 or not c3:
+            continue
+        
+        # Check if this looks like hospital metadata (hospital_name, last_updated_on, etc.)
+        hospital_indicators = ['hospital', 'name', 'location', 'address', 'license', 'updated', 'version']
+        hospital_hits = sum(1 for cell in c1 if any(indicator in cell for indicator in hospital_indicators))
+        
+        # Check if row 3 looks like data headers (billing_code, description, etc.)
+        data_indicators = ['billing_code', 'description', 'charge', 'price', 'payer', 'code_type']
+        data_hits = sum(1 for cell in c3 if any(indicator in cell for indicator in data_indicators))
+        
+        if hospital_hits >= 2 and data_hits >= 2 and len(c1) == len(c2):
+            # This looks like hospital metadata followed by data headers
             md = {}
             for k, v in zip(c1, c2):
                 if k and v:
