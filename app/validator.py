@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional, Literal
 
 # Import profile detection
 from app.profiles import detect_profile, map_to_internal, get_profile_description, validate_cms_headers
+from app.csv_header_sniffer import find_header_row, extract_header
 
 
 def load_rules_registry(registry_path: str) -> Dict[str, Any]:
@@ -639,12 +640,29 @@ def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["
         # Load the rules
         rules = load_rules_registry(registry_path)
         
+        # Re-open quickly for header detection
+        csv_path = parquet_path.replace('.parquet', '.csv')
+        if os.path.exists(csv_path):
+            with open(csv_path, "rb") as f:
+                _text = f.read(150_000).decode("utf-8", errors="ignore")
+            
+            header_row = find_header_row(_text)
+            headers = extract_header(csv_path, header_row)
+            
+            # Very small profile hint (non-breaking): if we see CMS-like headers, call it "cms_csv"
+            hits = sum(1 for h in headers if h in ("billing_code", "billing_code_type", "description", "standard_charge"))
+            detected_profile = "cms_csv" if hits >= 3 else "simple_csv"
+        else:
+            headers = None
+            header_row = 0
+            detected_profile = None
+        
         # Load the Parquet file
         df = pl.read_parquet(parquet_path)
         
         # Detect profile if not provided
         if profile is None:
-            profile = detect_profile(df.columns)
+            profile = detected_profile or detect_profile(df.columns)
         
         # Get column mapping for this profile
         column_mapping = map_to_internal(df.columns, profile)
@@ -670,6 +688,9 @@ def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["
             "profile": profile,
             "profile_description": get_profile_description(profile),
             "column_mapping": column_mapping,
+            "detected_profile": detected_profile,
+            "detected_header_row": header_row,
+            "detected_headers": headers,
             "schema_ok": None,  # Will be set based on header validation
             "checks": [],
             "summary": {

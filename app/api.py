@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 from app.db import get_session, init_db
 from app.models import Run, RunStatus
 from app.jobs import enqueue_validation, get_job_status
+from app.csv_header_sniffer import find_header_row, extract_header
 
 # Optional S3 (only used if creds are present & work)
 import boto3, botocore
@@ -29,6 +30,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # -------------------
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
 
 DATA_DIR = "/app/data"
 RAW_DIR = os.path.join(DATA_DIR, "raw")
@@ -74,6 +79,12 @@ def presign(key: str, expires=3600):
         Params={"Bucket": bucket, "Key": key},
         ExpiresIn=expires
     )
+
+
+def _read_prefix_for_header(path: str, size: int = 150_000) -> str:
+    with open(path, "rb") as f:
+        head = f.read(size)
+    return head.decode("utf-8", errors="ignore")
 
 
 def create_run(session: Session, run_id: str, filename: str = None, has_json: bool = False, has_csv: bool = False, profile: str = None) -> Run:
@@ -162,21 +173,28 @@ def stream_csv_to_parquet(local_csv_path: str, local_parquet_path: str) -> tuple
         tuple: (Path to the created Parquet file, detected profile)
     """
     try:
-        # Read CSV headers first to detect profile
-        from app.profiles import detect_profile
+        # Use header sniffer to find the real header row
+        prefix_text = _read_prefix_for_header(local_csv_path, 150_000)
+        header_row = find_header_row(prefix_text)
         
-        # Read just the headers
-        import csv as csv_module
-        with open(local_csv_path, 'r', encoding='utf-8') as f:
-            reader = csv_module.reader(f)
-            headers = next(reader)
+        # Extract headers for profile detection
+        headers = extract_header(local_csv_path, header_row)
         
         # Detect profile
+        from app.profiles import detect_profile
         profile = detect_profile(headers)
         
-        # Use Polars to scan CSV with error handling and stream to Parquet
-        df = pl.scan_csv(local_csv_path, ignore_errors=True)
-        df.sink_parquet(local_parquet_path, compression='zstd')
+        # Use polars to read, skipping rows before header so the next row is treated as the header.
+        df = pl.read_csv(
+            local_csv_path,
+            has_header=True,
+            skip_rows=header_row,
+            ignore_errors=True,  # existing behavior ok
+            infer_schema_length=10_000,
+        )
+
+        # Write Parquet (keep existing sink/write behavior)
+        df.write_parquet(local_parquet_path, compression="zstd")
         
         return local_parquet_path, profile
     except Exception as e:
