@@ -1,0 +1,44 @@
+# CMS Hospital Price Transparency Standard Charges Headers
+# Reference: https://www.cms.gov/hospital-price-transparency
+# Last Updated: 2025-01-09
+
+# REQUIRED HEADERS (Core)
+billing_code
+billing_code_type
+description
+standard_charge
+
+# RECOMMENDED HEADERS
+billing_code_type_version
+payer_name
+plan_name
+standard_charge_methodology
+
+# OPTIONAL HEADERS (Common)
+code
+code_system
+modifiers
+drug_information
+drug_unit_of_measurement
+drug_type_of_measurement
+setting
+billing_class
+revenue_code
+estimated_amount
+contracting_method
+
+# ADDITIONAL PRICE COLUMNS (may have multiple)
+# standard_charge|[payer_name]
+# standard_charge|[payer_name]|[plan_name]
+# Examples:
+# standard_charge|aetna
+# standard_charge|aetna|hmo_plan
+# standard_charge|medicare
+# standard_charge|self-pay
+
+# NOTES:
+# - Headers are case-insensitive
+# - Underscores and hyphens are interchangeable
+# - Multiple price columns can exist with pipe-delimited qualifiers
+# - Columns can appear in any order
+

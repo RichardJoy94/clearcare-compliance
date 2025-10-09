@@ -11,3 +11,7 @@ typesense==0.21.0
 jinja2==3.1.4
 PyYAML==6.0.1
 jsonschema==4.19.2
+sqlmodel>=0.0.21
+sqlalchemy>=2.0
+rq>=1.15
+redis>=5

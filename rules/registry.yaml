@@ -1,30 +1,129 @@
 # ClearCare Compliance Rules Registry
-# This file defines the validation rules for compliance data
+# This file defines comprehensive validation rules for hospital price transparency data
+version: "1.0.0"
 
-# Required columns that must be present in the dataset
-required_columns:
+# PROFILE-AWARE VALIDATION
+# Different CSV formats require different validation rules
+
+profiles:
+  # Simple CSV format - internal schema
+  simple_csv:
+    required_columns:
+      - code
+      - code_system
+      - gross_price
+      - cash_price
+      - date
+      - description
+    description: "Simple CSV format with internal schema"
+  
+  # CMS Hospital Price Transparency CSV format
+  cms_csv:
+    required_headers:
+      - billing_code
+      - billing_code_type
+      - description
+      - standard_charge
+    description: "CMS Hospital Price Transparency standard format"
+    # CMS files use different column names
+    header_mapping:
+      code: billing_code
+      code_system: billing_code_type
+      gross_price: standard_charge
+      description: description
+
+# COMMON RULES (applied to all profiles after header mapping)
+
+# RULE TYPE: column_types
+# Expected data types for each column
+column_types:
+  code: string
+  code_system: string
+  gross_price: float
+  cash_price: float
+  date: date
+  description: string
+  negotiated_rate: float  # optional column
+
+# RULE TYPE: value_ranges
+# Valid ranges for numeric columns (applied to mapped column names)
+value_ranges:
+  gross_price:
+    min: 0
+    max: 100000000.00
+    description: "Price must be between $0 and $100M"
+  cash_price:
+    min: 0
+    max: 100000000.00
+    description: "Cash price must be between $0 and $100M"
+  negotiated_rate:
+    min: 0.00
+    max: 100000000.00
+    description: "Negotiated rate must be between $0 and $100M"
+
+# RULE TYPE: non_negative
+# Columns that must have non-negative values
+non_negative:
+  - gross_price
+  - cash_price
+  - negotiated_rate
+
+# RULE TYPE: duplicates_by
+# Check for duplicate rows based on specific column combinations
+duplicates_by:
+  - columns: [code, code_system]
+    description: "Each code + code_system combination must be unique"
+  - columns: [code, code_system, date]
+    description: "Each code + code_system + date combination must be unique"
+
+# RULE TYPE: date_within_days
+# Date freshness validation - dates must be within N days of today
+date_within_days:
+  column: date
+  max_days: 540
+  description: "Price data must be within 540 days (~18 months) of current date"
+
+# RULE TYPE: cash_leq_gross
+# Business rule: cash price should be less than or equal to gross price
+cash_leq_gross:
+  enabled: true
+  cash_column: cash_price
+  gross_column: gross_price
+  description: "Cash price must be <= gross price"
+
+# RULE TYPE: enum_values
+# Columns with a fixed set of allowed values
+enum_values:
+  code_system:
+    allowed:
+      - CPT
+      - HCPCS
+      - ICD-10
+      - DRG
+      - MS-DRG
+      - NDC
+      - REVENUE_CODE
+    case_sensitive: false
+    description: "Code system must be one of the standard medical coding systems"
+
+# RULE TYPE: pattern_match
+# Columns that must match specific regex patterns
+pattern_match:
+  code:
+    pattern: "^[A-Z0-9\\-\\.]{1,50}$"
+    description: "Code must be 1-50 alphanumeric characters, hyphens, or periods"
+
+# RULE TYPE: not_null
+# Columns that must not contain null values
+not_null:
   - code
   - code_system
   - gross_price
   - cash_price
   - date
 
-# Maximum number of days for date freshness (540 days = ~18 months)
-date_freshness_max_days: 540
-
-# Business rule: cash price should be less than or equal to gross price
-cash_leq_gross: true
-
-# Business rule: all prices should be non-negative
-non_negative_prices: true
-
-# Additional validation rules can be added here
-# Example:
-# price_range:
-#   min: 0.01
-#   max: 999999.99
-# 
-# code_format:
-#   pattern: "^[A-Z0-9]{3,10}$"
-#   description: "Codes should be 3-10 characters, uppercase letters and numbers only"
+# Configuration for error reporting
+error_reporting:
+  max_failing_rows_per_rule: 5
+  include_row_details: true
 

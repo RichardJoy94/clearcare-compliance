@@ -1,10 +1,17 @@
-﻿from fastapi import FastAPI, UploadFile, File, HTTPException
+﻿from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 import os, uuid, shutil, json, zipfile, io, datetime as dt
 import polars as pl
 import csv
 from jinja2 import Environment, FileSystemLoader
+from typing import Optional, List
+from sqlmodel import Session, select
+
+# Database imports
+from app.db import get_session, init_db
+from app.models import Run, RunStatus
+from app.jobs import enqueue_validation, get_job_status
 
 # Optional S3 (only used if creds are present & work)
 import boto3, botocore
@@ -36,8 +43,11 @@ os.makedirs(EV_DIR,  exist_ok=True)
 # Initialize Jinja2 environment
 jinja_env = Environment(loader=FileSystemLoader(os.path.join(os.path.dirname(__file__), 'templates')))
 
-# Run store file path
-RUNS_STORE_PATH = os.path.join(os.path.dirname(__file__), 'data', 'runs.json')
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on application startup"""
+    init_db()
 
 def get_s3():
     access = os.getenv("S3_ACCESS_KEY")
@@ -66,47 +76,44 @@ def presign(key: str, expires=3600):
     )
 
 
-def load_runs_store() -> list:
-    """Load the runs store from JSON file."""
-    try:
-        if os.path.exists(RUNS_STORE_PATH):
-            with open(RUNS_STORE_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return []
-    except Exception as e:
-        print(f"Error loading runs store: {e}")
-        return []
+def create_run(session: Session, run_id: str, filename: str = None, has_json: bool = False, has_csv: bool = False, profile: str = None) -> Run:
+    """Create a new run in the database."""
+    run = Run(
+        id=uuid.UUID(run_id),
+        filename=filename,
+        has_json=has_json,
+        has_csv=has_csv,
+        profile=profile,
+        status=RunStatus.UPLOADED
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    return run
 
-def save_runs_store(runs: list) -> None:
-    """Save the runs store to JSON file."""
-    try:
-        with open(RUNS_STORE_PATH, 'w', encoding='utf-8') as f:
-            json.dump(runs, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Error saving runs store: {e}")
+def get_run(session: Session, run_id: str) -> Optional[Run]:
+    """Get a run by ID."""
+    return session.get(Run, uuid.UUID(run_id))
 
-def add_run_to_store(run_id: str, status: str = "uploaded", filename: str = None) -> None:
-    """Add a new run to the store."""
-    runs = load_runs_store()
-    new_run = {
-        "run_id": run_id,
-        "status": status,
-        "filename": filename,
-        "created_at": dt.datetime.utcnow().isoformat() + "Z",
-        "updated_at": dt.datetime.utcnow().isoformat() + "Z"
-    }
-    runs.append(new_run)
-    save_runs_store(runs)
-
-def update_run_status(run_id: str, status: str) -> None:
-    """Update the status of an existing run."""
-    runs = load_runs_store()
-    for run in runs:
-        if run["run_id"] == run_id:
-            run["status"] = status
-            run["updated_at"] = dt.datetime.utcnow().isoformat() + "Z"
-            break
-    save_runs_store(runs)
+def update_run_status(session: Session, run_id: str, status: RunStatus, 
+                     schema_ok: Optional[bool] = None, 
+                     rules_passed: Optional[int] = None, 
+                     rules_failed: Optional[int] = None) -> Optional[Run]:
+    """Update the status and validation results of a run."""
+    run = session.get(Run, uuid.UUID(run_id))
+    if run:
+        run.status = status
+        if schema_ok is not None:
+            run.schema_ok = schema_ok
+        if rules_passed is not None:
+            run.rules_passed = rules_passed
+        if rules_failed is not None:
+            run.rules_failed = rules_failed
+        run.updated_at = dt.datetime.utcnow()
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+    return run
 
 def detect_file_type(file_path: str) -> str:
     """Detect if a file is JSON or CSV based on content.
@@ -144,26 +151,39 @@ def detect_file_type(file_path: str) -> str:
     
     return 'unknown'
 
-def stream_csv_to_parquet(local_csv_path: str, local_parquet_path: str) -> str:
-    """Stream CSV to Parquet using Polars with error handling.
+def stream_csv_to_parquet(local_csv_path: str, local_parquet_path: str) -> tuple:
+    """Stream CSV to Parquet using Polars with error handling and profile detection.
     
     Args:
         local_csv_path: Path to the input CSV file
         local_parquet_path: Path for the output Parquet file
         
     Returns:
-        str: Path to the created Parquet file
+        tuple: (Path to the created Parquet file, detected profile)
     """
     try:
+        # Read CSV headers first to detect profile
+        from app.profiles import detect_profile
+        
+        # Read just the headers
+        import csv as csv_module
+        with open(local_csv_path, 'r', encoding='utf-8') as f:
+            reader = csv_module.reader(f)
+            headers = next(reader)
+        
+        # Detect profile
+        profile = detect_profile(headers)
+        
         # Use Polars to scan CSV with error handling and stream to Parquet
         df = pl.scan_csv(local_csv_path, ignore_errors=True)
         df.sink_parquet(local_parquet_path, compression='zstd')
-        return local_parquet_path
+        
+        return local_parquet_path, profile
     except Exception as e:
         raise Exception(f"Failed to convert CSV to Parquet: {e}")
 
 @app.post("/upload", summary="Upload Document")
-async def upload(document: UploadFile = File(...)):
+async def upload(document: UploadFile = File(...), session: Session = Depends(get_session)):
     try:
         run_id = str(uuid.uuid4())
         safe_name = f"{run_id}__{os.path.basename(document.filename)}"
@@ -184,28 +204,31 @@ async def upload(document: UploadFile = File(...)):
         }
         
         # process based on file type
+        has_json = False
+        has_csv = False
+        detected_profile = None
+        
         if file_type == 'csv':
-            # CSV processing - convert to Parquet
+            # CSV processing - convert to Parquet and detect profile
             local_parquet_path = os.path.join(PARQUET_DIR, f"{run_id}.parquet")
-            stream_csv_to_parquet(local_raw_path, local_parquet_path)
-            result["local_parquet_path"] = local_parquet_path
-            
-            # Add run to store with CSV type
-            add_run_to_store(run_id, "uploaded", document.filename)
+            parquet_path, detected_profile = stream_csv_to_parquet(local_raw_path, local_parquet_path)
+            result["local_parquet_path"] = parquet_path
+            result["profile"] = detected_profile
+            has_csv = True
             
         elif file_type == 'json':
             # JSON processing - copy to JSON directory
             local_json_path = os.path.join(JSON_DIR, f"{run_id}.json")
             shutil.copy2(local_raw_path, local_json_path)
             result["local_json_path"] = local_json_path
-            
-            # Add run to store with JSON type
-            add_run_to_store(run_id, "uploaded", document.filename)
+            has_json = True
             
         else:
             # Unknown file type
-            add_run_to_store(run_id, "uploaded", document.filename)
             result["warning"] = f"Unknown file type detected: {file_type}"
+        
+        # Create run in database with profile information
+        create_run(session, run_id, document.filename, has_json=has_json, has_csv=has_csv, profile=detected_profile)
 
         # S3 upload
         s3_keys = {}
@@ -237,11 +260,32 @@ async def upload(document: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"upload_failed: {e}")
 
 @app.post("/validate", summary="Validate Data")
-async def validate(payload: dict):
+async def validate(payload: dict, session: Session = Depends(get_session)):
     run_id = payload.get("run_id")
     if not run_id:
         raise HTTPException(status_code=422, detail="run_id required")
 
+    # Check if async jobs are enabled
+    async_jobs = os.getenv("ASYNC_JOBS", "0") == "1"
+    
+    if async_jobs:
+        # Enqueue async validation job
+        job_id = enqueue_validation(run_id)
+        if job_id:
+            return {"job_id": job_id, "status": "queued"}
+        else:
+            # Fallback to sync if Redis not available
+            return await validate_sync(run_id, session)
+    else:
+        # Run validation synchronously
+        return await validate_sync(run_id, session)
+
+async def validate_sync(run_id: str, session: Session) -> dict:
+    """Synchronous validation logic (fallback when async not available)."""
+    # Get run from database to retrieve profile
+    run = get_run(session, run_id)
+    profile = run.profile if run else None
+    
     # Check what files exist for this run_id
     parquet_path = os.path.join(PARQUET_DIR, f"{run_id}.parquet")
     json_path = os.path.join(JSON_DIR, f"{run_id}.json")
@@ -265,7 +309,7 @@ async def validate(payload: dict):
             registry_path = os.path.join(os.path.dirname(__file__), "..", "rules", "registry.yaml")
             if os.path.exists(registry_path):
                 from app.validator import run_rules
-                csv_result = run_rules(parquet_path, registry_path)
+                csv_result = run_rules(parquet_path, registry_path, profile=profile)
                 validation_results["csv_validation"] = csv_result
                 
                 # Update combined summary
@@ -305,11 +349,35 @@ async def validate(payload: dict):
     if not os.path.exists(parquet_path) and not os.path.exists(json_path):
         raise HTTPException(status_code=404, detail=f"No files found for run_id: {run_id}")
 
-    # Update run status based on combined validation results
-    if validation_results["combined_summary"]["failed"] > 0 or validation_results["combined_summary"]["errors"] > 0:
-        update_run_status(run_id, "validation_failed")
+    # Update run status and validation results in database
+    combined_summary = validation_results["combined_summary"]
+    csv_validation = validation_results.get("csv_validation")
+    json_validation = validation_results.get("json_validation")
+    
+    # Determine final status
+    if combined_summary["failed"] > 0 or combined_summary["errors"] > 0:
+        final_status = RunStatus.FAILED
     else:
-        update_run_status(run_id, "validated")
+        final_status = RunStatus.VALIDATED
+    
+    # Extract validation counts
+    rules_passed = combined_summary["passed"]
+    rules_failed = combined_summary["failed"]
+    
+    # Extract schema validation result
+    schema_ok = None
+    if json_validation and json_validation.get("schema_validation"):
+        schema_ok = json_validation["schema_validation"].get("valid")
+    
+    # Update run in database
+    update_run_status(
+        session, 
+        run_id, 
+        final_status,
+        schema_ok=schema_ok,
+        rules_passed=rules_passed,
+        rules_failed=rules_failed
+    )
     
     # Save combined validation evidence
     evidence_path = os.path.join(EV_DIR, f"{run_id}.json")
@@ -405,36 +473,73 @@ async def generate_pack(run_id: str):
 
     # optional S3 publish + presigned URL
     s3_key = f"evidence/{run_id}.zip"
+    expires_in = 3600  # 1 hour
+    
     try:
         s3, bucket = get_s3()
         if s3 and bucket:
             s3.upload_file(zip_path, bucket, s3_key)
-            return {
+            presigned_url = presign(s3_key, expires_in)
+            return JSONResponse({
                 "run_id": run_id,
-                "local_zip": zip_path,
                 "s3_key": s3_key,
-                "s3_presigned_url": presign(s3_key, 3600)
-            }
+                "s3_presigned_url": presigned_url,
+                "expires_in": expires_in
+            })
     except Exception as e:
         print(f"[pack] S3 publish skipped: {e}")
 
     # fallback to returning the local file if S3 isn't configured
     return FileResponse(zip_path, media_type="application/zip", filename=f"{run_id}.zip")
 
-@app.get("/runs", summary="List All Runs")
-async def list_runs():
-    """List all compliance runs."""
-    runs = load_runs_store()
-    return {"runs": runs, "total": len(runs)}
+@app.get("/runs", summary="List Runs with Pagination")
+async def list_runs(
+    session: Session = Depends(get_session),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    q: Optional[str] = Query(None, description="Search in filename"),
+    limit: int = Query(50, ge=1, le=1000, description="Number of items per page"),
+    offset: int = Query(0, ge=0, description="Number of items to skip")
+):
+    """List compliance runs with pagination and filtering."""
+    
+    # Build query
+    query = select(Run)
+    
+    # Apply filters
+    if status:
+        try:
+            status_enum = RunStatus(status)
+            query = query.where(Run.status == status_enum)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+    
+    if q:
+        query = query.where(Run.filename.contains(q))
+    
+    # Get total count
+    count_query = select(Run).where(*query.whereclause) if query.whereclause else select(Run)
+    total = len(session.exec(count_query).all())
+    
+    # Apply pagination
+    query = query.offset(offset).limit(limit).order_by(Run.created_at.desc())
+    
+    # Execute query
+    runs = session.exec(query).all()
+    
+    return {
+        "items": runs,
+        "total": total,
+        "limit": limit,
+        "offset": offset
+    }
 
 @app.get("/runs/{run_id}", summary="Get Run Details")
-async def get_run_details(run_id: str):
+async def get_run_details(run_id: str, session: Session = Depends(get_session)):
     """Get details for a specific run."""
-    runs = load_runs_store()
-    for run in runs:
-        if run["run_id"] == run_id:
-            return run
-    raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    run = get_run(session, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    return run
 
 @app.get("/runs/{run_id}/validation", summary="Get Run Validation Details")
 async def get_run_validation_details(run_id: str):
@@ -480,12 +585,18 @@ async def get_run_validation_details(run_id: str):
         return {"run_id": run_id, "error": str(e), "csv_validation": "-", "json_validation": "-"}
 
 @app.post("/publish", summary="Publish Data")
-async def publish(payload: dict):
+async def publish(payload: dict, session: Session = Depends(get_session)):
     run_id = payload.get("run_id")
     if not run_id:
         raise HTTPException(status_code=422, detail="run_id required")
     
     # Update run status to published
-    update_run_status(run_id, "published")
+    update_run_status(session, run_id, RunStatus.PUBLISHED)
     
     return {"run_id": run_id, "status": "published"}
+
+@app.get("/tasks/{job_id}", summary="Get Job Status")
+async def get_task_status(job_id: str):
+    """Get the status and result of a background job."""
+    status_info = get_job_status(job_id)
+    return status_info

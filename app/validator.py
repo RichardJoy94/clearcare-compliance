@@ -1,13 +1,17 @@
 """
 ClearCare Compliance Validator
-Implements rule-based validation for compliance data using Polars
+Implements comprehensive rule-based validation for compliance data using Polars
 """
 
 import os
 import yaml
 import polars as pl
+import re
 from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Literal
+
+# Import profile detection
+from app.profiles import detect_profile, map_to_internal, get_profile_description, validate_cms_headers
 
 
 def load_rules_registry(registry_path: str) -> Dict[str, Any]:
@@ -27,12 +31,606 @@ def load_rules_registry(registry_path: str) -> Dict[str, Any]:
         raise Exception(f"Failed to load rules registry: {e}")
 
 
-def run_rules(parquet_path: str, registry_path: str) -> Dict[str, Any]:
-    """Run compliance rules against a Parquet file.
+def get_failing_rows(df: pl.DataFrame, condition: pl.Expr, max_rows: int = 5) -> List[Dict]:
+    """Extract failing rows as dictionaries for reporting.
+    
+    Args:
+        df: Polars DataFrame
+        condition: Boolean expression identifying failing rows
+        max_rows: Maximum number of failing rows to return
+        
+    Returns:
+        List of dictionaries representing failing rows
+    """
+    try:
+        failing_df = df.filter(condition).head(max_rows)
+        return failing_df.to_dicts()
+    except Exception as e:
+        return [{"error": f"Failed to extract failing rows: {str(e)}"}]
+
+
+def check_profile_headers(df: pl.DataFrame, profile: Literal["cms_csv", "simple_csv"], 
+                         rules: Dict, max_failing_rows: int) -> Dict:
+    """Check headers based on detected profile."""
+    profile_config = rules.get("profiles", {}).get(profile, {})
+    
+    if profile == "cms_csv":
+        # For CMS CSV, check required_headers
+        required_headers = profile_config.get("required_headers", [])
+        
+        # Normalize both the actual headers and required headers for comparison
+        actual_headers = {h.lower().strip().replace(" ", "_").replace("-", "_") for h in df.columns}
+        normalized_required = {h.lower().strip().replace(" ", "_").replace("-", "_") for h in required_headers}
+        
+        missing_headers = normalized_required - actual_headers
+        
+        if missing_headers:
+            return {
+                "rule": "required_headers",
+                "status": "fail",
+                "message": f"Missing required CMS headers: {', '.join(missing_headers)}",
+                "details": {
+                    "profile": profile,
+                    "missing_headers": list(missing_headers),
+                    "present_headers": list(actual_headers),
+                    "profile_description": get_profile_description(profile)
+                }
+            }
+        else:
+            return {
+                "rule": "required_headers",
+                "status": "pass",
+                "message": f"All required CMS headers present",
+                "details": {
+                    "profile": profile,
+                    "required_headers": required_headers,
+                    "profile_description": get_profile_description(profile)
+                }
+            }
+    else:
+        # For simple CSV, check required_columns
+        required_columns = profile_config.get("required_columns", [])
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            return {
+                "rule": "required_columns",
+                "status": "fail",
+                "message": f"Missing required columns: {', '.join(missing_columns)}",
+                "details": {
+                    "profile": profile,
+                    "missing_columns": missing_columns,
+                    "present_columns": df.columns,
+                    "profile_description": get_profile_description(profile)
+                }
+            }
+        else:
+            return {
+                "rule": "required_columns",
+                "status": "pass",
+                "message": "All required columns present",
+                "details": {
+                    "profile": profile,
+                    "required_columns": required_columns,
+                    "profile_description": get_profile_description(profile)
+                }
+            }
+
+
+def check_column_types(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> List[Dict]:
+    """Check that columns have the expected data types."""
+    column_types = rules.get("column_types", {})
+    if not column_types:
+        return []
+    
+    results = []
+    type_mapping = {
+        "string": pl.Utf8,
+        "float": pl.Float64,
+        "int": pl.Int64,
+        "date": pl.Date,
+        "datetime": pl.Datetime,
+        "bool": pl.Boolean
+    }
+    
+    for col, expected_type_str in column_types.items():
+        if col not in df.columns:
+            continue  # Skip if column doesn't exist
+        
+        expected_type = type_mapping.get(expected_type_str)
+        actual_type = df[col].dtype
+        
+        # Check if types match (allowing for compatible types)
+        type_match = False
+        if expected_type == pl.Float64 and actual_type in [pl.Float64, pl.Float32, pl.Int64, pl.Int32]:
+            type_match = True
+        elif expected_type == pl.Utf8 and actual_type == pl.Utf8:
+            type_match = True
+        elif expected_type == actual_type:
+            type_match = True
+        
+        if not type_match:
+            results.append({
+                "rule": f"column_types.{col}",
+                "status": "fail",
+                "message": f"Column '{col}' has type {actual_type}, expected {expected_type_str}",
+                "details": {
+                    "column": col,
+                    "expected_type": expected_type_str,
+                    "actual_type": str(actual_type)
+                }
+            })
+        else:
+            results.append({
+                "rule": f"column_types.{col}",
+                "status": "pass",
+                "message": f"Column '{col}' has correct type",
+                "details": {"column": col, "type": expected_type_str}
+            })
+    
+    return results
+
+
+def check_value_ranges(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> List[Dict]:
+    """Check that numeric columns are within specified ranges."""
+    value_ranges = rules.get("value_ranges", {})
+    if not value_ranges:
+        return []
+    
+    results = []
+    for col, range_spec in value_ranges.items():
+        if col not in df.columns:
+            continue
+        
+        min_val = range_spec.get("min")
+        max_val = range_spec.get("max")
+        description = range_spec.get("description", f"{col} range check")
+        
+        try:
+            # Cast to numeric
+            df_numeric = df.with_columns(
+                pl.col(col).cast(pl.Float64, strict=False).alias(f"{col}_numeric")
+            )
+            
+            # Check for values outside range
+            condition = (
+                (pl.col(f"{col}_numeric").is_not_null()) &
+                ((pl.col(f"{col}_numeric") < min_val) | (pl.col(f"{col}_numeric") > max_val))
+            )
+            
+            out_of_range_count = df_numeric.filter(condition).height
+            
+            if out_of_range_count > 0:
+                failing_rows = get_failing_rows(df, condition, max_failing_rows)
+                results.append({
+                    "rule": f"value_ranges.{col}",
+                    "status": "fail",
+                    "message": f"{out_of_range_count} rows have {col} outside range [{min_val}, {max_val}]",
+                    "details": {
+                        "column": col,
+                        "min": min_val,
+                        "max": max_val,
+                        "out_of_range_count": out_of_range_count,
+                        "failing_rows": failing_rows
+                    }
+                })
+            else:
+                results.append({
+                    "rule": f"value_ranges.{col}",
+                    "status": "pass",
+                    "message": description,
+                    "details": {"column": col, "min": min_val, "max": max_val}
+                })
+        except Exception as e:
+            results.append({
+                "rule": f"value_ranges.{col}",
+                "status": "error",
+                "message": f"Error checking range for {col}: {str(e)}",
+                "details": {"error": str(e)}
+            })
+    
+    return results
+
+
+def check_non_negative(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> List[Dict]:
+    """Check that specified columns have non-negative values."""
+    non_negative_cols = rules.get("non_negative", [])
+    if not non_negative_cols:
+        return []
+    
+    results = []
+    for col in non_negative_cols:
+        if col not in df.columns:
+            continue
+        
+        try:
+            # Cast to numeric and check for negative values
+            df_numeric = df.with_columns(
+                pl.col(col).cast(pl.Float64, strict=False).alias(f"{col}_numeric")
+            )
+            
+            condition = (
+                pl.col(f"{col}_numeric").is_not_null() &
+                (pl.col(f"{col}_numeric") < 0)
+            )
+            
+            negative_count = df_numeric.filter(condition).height
+            
+            if negative_count > 0:
+                failing_rows = get_failing_rows(df, condition, max_failing_rows)
+                results.append({
+                    "rule": f"non_negative.{col}",
+                    "status": "fail",
+                    "message": f"{negative_count} rows have negative {col}",
+                    "details": {
+                        "column": col,
+                        "negative_count": negative_count,
+                        "failing_rows": failing_rows
+                    }
+                })
+            else:
+                results.append({
+                    "rule": f"non_negative.{col}",
+                    "status": "pass",
+                    "message": f"All {col} values are non-negative",
+                    "details": {"column": col}
+                })
+        except Exception as e:
+            results.append({
+                "rule": f"non_negative.{col}",
+                "status": "error",
+                "message": f"Error checking non-negative for {col}: {str(e)}",
+                "details": {"error": str(e)}
+            })
+    
+    return results
+
+
+def check_duplicates_by(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> List[Dict]:
+    """Check for duplicate rows based on specified column combinations."""
+    duplicates_by = rules.get("duplicates_by", [])
+    if not duplicates_by:
+        return []
+    
+    results = []
+    for dup_spec in duplicates_by:
+        columns = dup_spec.get("columns", [])
+        description = dup_spec.get("description", f"Duplicate check on {', '.join(columns)}")
+        
+        # Check if all columns exist
+        missing_cols = [col for col in columns if col not in df.columns]
+        if missing_cols:
+            results.append({
+                "rule": f"duplicates_by.{'+'.join(columns)}",
+                "status": "error",
+                "message": f"Missing columns for duplicate check: {missing_cols}",
+                "details": {"missing_columns": missing_cols}
+            })
+            continue
+        
+        try:
+            # Find duplicates
+            duplicates = df.group_by(columns).agg(
+                pl.count().alias("count")
+            ).filter(pl.col("count") > 1)
+            
+            duplicate_count = duplicates.height
+            
+            if duplicate_count > 0:
+                # Get sample failing rows
+                failing_rows = duplicates.head(max_failing_rows).to_dicts()
+                results.append({
+                    "rule": f"duplicates_by.{'+'.join(columns)}",
+                    "status": "fail",
+                    "message": f"{duplicate_count} duplicate combinations found",
+                    "details": {
+                        "columns": columns,
+                        "duplicate_combinations": duplicate_count,
+                        "failing_rows": failing_rows
+                    }
+                })
+            else:
+                results.append({
+                    "rule": f"duplicates_by.{'+'.join(columns)}",
+                    "status": "pass",
+                    "message": description,
+                    "details": {"columns": columns}
+                })
+        except Exception as e:
+            results.append({
+                "rule": f"duplicates_by.{'+'.join(columns)}",
+                "status": "error",
+                "message": f"Error checking duplicates: {str(e)}",
+                "details": {"error": str(e)}
+            })
+    
+    return results
+
+
+def check_date_within_days(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> Optional[Dict]:
+    """Check that dates are within specified number of days from today."""
+    date_rule = rules.get("date_within_days")
+    if not date_rule:
+        return None
+    
+    column = date_rule.get("column")
+    max_days = date_rule.get("max_days")
+    description = date_rule.get("description", f"Date must be within {max_days} days")
+    
+    if not column or column not in df.columns:
+        return None
+    
+    try:
+        cutoff_date = datetime.now() - timedelta(days=max_days)
+        
+        # Try to parse date column
+        df_with_dates = df.with_columns(
+            pl.col(column).str.to_datetime().alias("date_parsed")
+        )
+        
+        condition = pl.col("date_parsed") < cutoff_date
+        old_dates_count = df_with_dates.filter(condition).height
+        
+        if old_dates_count > 0:
+            failing_rows = get_failing_rows(df, condition, max_failing_rows)
+            return {
+                "rule": "date_within_days",
+                "status": "fail",
+                "message": f"{old_dates_count} rows have dates older than {max_days} days",
+                "details": {
+                    "column": column,
+                    "max_days": max_days,
+                    "cutoff_date": cutoff_date.isoformat(),
+                    "old_dates_count": old_dates_count,
+                    "failing_rows": failing_rows
+                }
+            }
+        else:
+            return {
+                "rule": "date_within_days",
+                "status": "pass",
+                "message": description,
+                "details": {"column": column, "max_days": max_days}
+            }
+    except Exception as e:
+        return {
+            "rule": "date_within_days",
+            "status": "error",
+            "message": f"Error checking date freshness: {str(e)}",
+            "details": {"error": str(e)}
+        }
+
+
+def check_cash_leq_gross(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> Optional[Dict]:
+    """Check that cash price is less than or equal to gross price."""
+    cash_rule = rules.get("cash_leq_gross")
+    if not cash_rule or not cash_rule.get("enabled"):
+        return None
+    
+    cash_col = cash_rule.get("cash_column", "cash_price")
+    gross_col = cash_rule.get("gross_column", "gross_price")
+    description = cash_rule.get("description", "Cash price must be <= gross price")
+    
+    if cash_col not in df.columns or gross_col not in df.columns:
+        return None
+    
+    try:
+        # Cast to numeric
+        df_numeric = df.with_columns([
+            pl.col(cash_col).cast(pl.Float64, strict=False).alias("cash_numeric"),
+            pl.col(gross_col).cast(pl.Float64, strict=False).alias("gross_numeric")
+        ])
+        
+        condition = (
+            pl.col("cash_numeric").is_not_null() &
+            pl.col("gross_numeric").is_not_null() &
+            (pl.col("cash_numeric") > pl.col("gross_numeric"))
+        )
+        
+        invalid_count = df_numeric.filter(condition).height
+        
+        if invalid_count > 0:
+            failing_rows = get_failing_rows(df, condition, max_failing_rows)
+            return {
+                "rule": "cash_leq_gross",
+                "status": "fail",
+                "message": f"{invalid_count} rows have cash_price > gross_price",
+                "details": {
+                    "cash_column": cash_col,
+                    "gross_column": gross_col,
+                    "invalid_count": invalid_count,
+                    "failing_rows": failing_rows
+                }
+            }
+        else:
+            return {
+                "rule": "cash_leq_gross",
+                "status": "pass",
+                "message": description,
+                "details": {"cash_column": cash_col, "gross_column": gross_col}
+            }
+    except Exception as e:
+        return {
+            "rule": "cash_leq_gross",
+            "status": "error",
+            "message": f"Error checking cash <= gross: {str(e)}",
+            "details": {"error": str(e)}
+        }
+
+
+def check_enum_values(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> List[Dict]:
+    """Check that columns contain only allowed values."""
+    enum_values = rules.get("enum_values", {})
+    if not enum_values:
+        return []
+    
+    results = []
+    for col, enum_spec in enum_values.items():
+        if col not in df.columns:
+            continue
+        
+        allowed = enum_spec.get("allowed", [])
+        case_sensitive = enum_spec.get("case_sensitive", True)
+        description = enum_spec.get("description", f"{col} must be one of allowed values")
+        
+        try:
+            # Prepare allowed values
+            if not case_sensitive:
+                allowed_set = set(v.upper() for v in allowed)
+                df_check = df.with_columns(
+                    pl.col(col).str.to_uppercase().alias(f"{col}_upper")
+                )
+                condition = ~pl.col(f"{col}_upper").is_in(allowed_set)
+            else:
+                allowed_set = set(allowed)
+                condition = ~pl.col(col).is_in(allowed_set)
+            
+            # Filter for non-null values that aren't in allowed set
+            condition = pl.col(col).is_not_null() & condition
+            
+            if not case_sensitive:
+                invalid_count = df_check.filter(condition).height
+            else:
+                invalid_count = df.filter(condition).height
+            
+            if invalid_count > 0:
+                failing_rows = get_failing_rows(df, condition, max_failing_rows)
+                results.append({
+                    "rule": f"enum_values.{col}",
+                    "status": "fail",
+                    "message": f"{invalid_count} rows have invalid {col} values",
+                    "details": {
+                        "column": col,
+                        "allowed_values": allowed,
+                        "case_sensitive": case_sensitive,
+                        "invalid_count": invalid_count,
+                        "failing_rows": failing_rows
+                    }
+                })
+            else:
+                results.append({
+                    "rule": f"enum_values.{col}",
+                    "status": "pass",
+                    "message": description,
+                    "details": {"column": col, "allowed_values": allowed}
+                })
+        except Exception as e:
+            results.append({
+                "rule": f"enum_values.{col}",
+                "status": "error",
+                "message": f"Error checking enum values for {col}: {str(e)}",
+                "details": {"error": str(e)}
+            })
+    
+    return results
+
+
+def check_pattern_match(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> List[Dict]:
+    """Check that string columns match specified regex patterns."""
+    pattern_match = rules.get("pattern_match", {})
+    if not pattern_match:
+        return []
+    
+    results = []
+    for col, pattern_spec in pattern_match.items():
+        if col not in df.columns:
+            continue
+        
+        pattern = pattern_spec.get("pattern")
+        description = pattern_spec.get("description", f"{col} must match pattern")
+        
+        try:
+            # Use Polars regex matching
+            condition = (
+                pl.col(col).is_not_null() &
+                (~pl.col(col).str.contains(f"^{pattern}$"))
+            )
+            
+            invalid_count = df.filter(condition).height
+            
+            if invalid_count > 0:
+                failing_rows = get_failing_rows(df, condition, max_failing_rows)
+                results.append({
+                    "rule": f"pattern_match.{col}",
+                    "status": "fail",
+                    "message": f"{invalid_count} rows have {col} not matching pattern",
+                    "details": {
+                        "column": col,
+                        "pattern": pattern,
+                        "invalid_count": invalid_count,
+                        "failing_rows": failing_rows
+                    }
+                })
+            else:
+                results.append({
+                    "rule": f"pattern_match.{col}",
+                    "status": "pass",
+                    "message": description,
+                    "details": {"column": col, "pattern": pattern}
+                })
+        except Exception as e:
+            results.append({
+                "rule": f"pattern_match.{col}",
+                "status": "error",
+                "message": f"Error checking pattern for {col}: {str(e)}",
+                "details": {"error": str(e)}
+            })
+    
+    return results
+
+
+def check_not_null(df: pl.DataFrame, rules: Dict, max_failing_rows: int) -> List[Dict]:
+    """Check that specified columns do not contain null values."""
+    not_null_cols = rules.get("not_null", [])
+    if not not_null_cols:
+        return []
+    
+    results = []
+    for col in not_null_cols:
+        if col not in df.columns:
+            continue
+        
+        try:
+            condition = pl.col(col).is_null()
+            null_count = df.filter(condition).height
+            
+            if null_count > 0:
+                failing_rows = get_failing_rows(df, condition, max_failing_rows)
+                results.append({
+                    "rule": f"not_null.{col}",
+                    "status": "fail",
+                    "message": f"{null_count} rows have null {col}",
+                    "details": {
+                        "column": col,
+                        "null_count": null_count,
+                        "failing_rows": failing_rows
+                    }
+                })
+            else:
+                results.append({
+                    "rule": f"not_null.{col}",
+                    "status": "pass",
+                    "message": f"No null values in {col}",
+                    "details": {"column": col}
+                })
+        except Exception as e:
+            results.append({
+                "rule": f"not_null.{col}",
+                "status": "error",
+                "message": f"Error checking nulls for {col}: {str(e)}",
+                "details": {"error": str(e)}
+            })
+    
+    return results
+
+
+def run_rules(parquet_path: str, registry_path: str, profile: Optional[Literal["cms_csv", "simple_csv"]] = None) -> Dict[str, Any]:
+    """Run comprehensive compliance rules against a Parquet file.
     
     Args:
         parquet_path: Path to the Parquet file to validate
         registry_path: Path to the rules registry YAML file
+        profile: Optional profile hint ("cms_csv" or "simple_csv")
         
     Returns:
         Dict containing rule results and validation summary
@@ -44,12 +642,35 @@ def run_rules(parquet_path: str, registry_path: str) -> Dict[str, Any]:
         # Load the Parquet file
         df = pl.read_parquet(parquet_path)
         
+        # Detect profile if not provided
+        if profile is None:
+            profile = detect_profile(df.columns)
+        
+        # Get column mapping for this profile
+        column_mapping = map_to_internal(df.columns, profile)
+        
+        # Create a mapped DataFrame with internal column names (for rule evaluation)
+        mapped_df = df
+        if profile == "cms_csv" and column_mapping:
+            # Rename columns to internal schema for rule evaluation
+            rename_dict = {v: k for k, v in column_mapping.items() if v in df.columns}
+            if rename_dict:
+                mapped_df = df.rename(rename_dict)
+        
+        # Get error reporting configuration
+        error_config = rules.get("error_reporting", {})
+        max_failing_rows = error_config.get("max_failing_rows_per_rule", 5)
+        
         # Initialize results
         results = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "rules_version": "v1.0.0",
+            "rules_version": rules.get("version", "1.0.0"),
             "file_path": parquet_path,
             "total_rows": len(df),
+            "profile": profile,
+            "profile_description": get_profile_description(profile),
+            "column_mapping": column_mapping,
+            "schema_ok": None,  # Will be set based on header validation
             "checks": [],
             "summary": {
                 "total_checks": 0,
@@ -59,163 +680,71 @@ def run_rules(parquet_path: str, registry_path: str) -> Dict[str, Any]:
             }
         }
         
-        # Rule 1: Check required columns
-        required_columns = rules.get("required_columns", [])
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        # Run all rule checks
+        all_checks = []
         
-        if missing_columns:
-            results["checks"].append({
-                "rule": "required_columns",
-                "status": "fail",
-                "message": f"Missing required columns: {missing_columns}",
-                "details": {"missing_columns": missing_columns}
-            })
-            results["summary"]["failed"] += 1
-        else:
-            results["checks"].append({
-                "rule": "required_columns",
-                "status": "pass",
-                "message": "All required columns present",
-                "details": {"required_columns": required_columns}
-            })
-            results["summary"]["passed"] += 1
-        results["summary"]["total_checks"] += 1
+        # 1. Profile-aware header check
+        header_check = check_profile_headers(df, profile, rules, max_failing_rows)
+        all_checks.append(header_check)
         
-        # Rule 2: Check date freshness (if date column exists)
-        if "date" in df.columns and rules.get("date_freshness_max_days"):
-            max_days = rules["date_freshness_max_days"]
-            cutoff_date = datetime.now() - timedelta(days=max_days)
-            
-            try:
-                # Convert date column to datetime if it's not already
-                df_with_dates = df.with_columns(
-                    pl.col("date").str.to_datetime().alias("date_parsed")
-                )
-                
-                # Count rows with dates older than cutoff
-                old_dates = df_with_dates.filter(
-                    pl.col("date_parsed") < cutoff_date
-                ).height
-                
-                if old_dates > 0:
-                    results["checks"].append({
-                        "rule": "date_freshness",
-                        "status": "fail",
-                        "message": f"{old_dates} rows have dates older than {max_days} days",
-                        "details": {"old_rows": old_dates, "max_days": max_days}
-                    })
-                    results["summary"]["failed"] += 1
-                else:
-                    results["checks"].append({
-                        "rule": "date_freshness",
-                        "status": "pass",
-                        "message": f"All dates are within {max_days} days",
-                        "details": {"max_days": max_days}
-                    })
-                    results["summary"]["passed"] += 1
-            except Exception as e:
-                results["checks"].append({
-                    "rule": "date_freshness",
-                    "status": "error",
-                    "message": f"Error checking date freshness: {str(e)}",
-                    "details": {"error": str(e)}
-                })
-                results["summary"]["errors"] += 1
+        # Set schema_ok based on header validation
+        results["schema_ok"] = (header_check.get("status") == "pass")
+        
+        # 2. Column types (use mapped_df for CMS, original df for simple)
+        all_checks.extend(check_column_types(mapped_df, rules, max_failing_rows))
+        
+        # 3. Value ranges
+        all_checks.extend(check_value_ranges(mapped_df, rules, max_failing_rows))
+        
+        # 4. Non-negative values
+        all_checks.extend(check_non_negative(mapped_df, rules, max_failing_rows))
+        
+        # 5. Duplicates check (use original df to check actual columns)
+        all_checks.extend(check_duplicates_by(mapped_df, rules, max_failing_rows))
+        
+        # 6. Date within days
+        date_check = check_date_within_days(mapped_df, rules, max_failing_rows)
+        if date_check:
+            all_checks.append(date_check)
+        
+        # 7. Cash <= Gross
+        cash_check = check_cash_leq_gross(mapped_df, rules, max_failing_rows)
+        if cash_check:
+            all_checks.append(cash_check)
+        
+        # 8. Enum values
+        all_checks.extend(check_enum_values(mapped_df, rules, max_failing_rows))
+        
+        # 9. Pattern matching
+        all_checks.extend(check_pattern_match(mapped_df, rules, max_failing_rows))
+        
+        # 10. Not null
+        all_checks.extend(check_not_null(mapped_df, rules, max_failing_rows))
+        
+        # Compile results
+        results["checks"] = all_checks
+        
+        # Calculate summary
+        for check in all_checks:
             results["summary"]["total_checks"] += 1
-        
-        # Rule 3: Check cash <= gross price (if both columns exist)
-        if "cash_price" in df.columns and "gross_price" in df.columns and rules.get("cash_leq_gross"):
-            try:
-                # Convert to numeric, handling any non-numeric values
-                df_numeric = df.with_columns([
-                    pl.col("cash_price").cast(pl.Float64, strict=False),
-                    pl.col("gross_price").cast(pl.Float64, strict=False)
-                ])
-                
-                # Count rows where cash_price > gross_price
-                invalid_prices = df_numeric.filter(
-                    pl.col("cash_price") > pl.col("gross_price")
-                ).height
-                
-                if invalid_prices > 0:
-                    results["checks"].append({
-                        "rule": "cash_leq_gross",
-                        "status": "fail",
-                        "message": f"{invalid_prices} rows have cash_price > gross_price",
-                        "details": {"invalid_rows": invalid_prices}
-                    })
-                    results["summary"]["failed"] += 1
-                else:
-                    results["checks"].append({
-                        "rule": "cash_leq_gross",
-                        "status": "pass",
-                        "message": "All cash prices are <= gross prices",
-                        "details": {}
-                    })
-                    results["summary"]["passed"] += 1
-            except Exception as e:
-                results["checks"].append({
-                    "rule": "cash_leq_gross",
-                    "status": "error",
-                    "message": f"Error checking cash <= gross rule: {str(e)}",
-                    "details": {"error": str(e)}
-                })
+            status = check.get("status", "error")
+            if status == "pass":
+                results["summary"]["passed"] += 1
+            elif status == "fail":
+                results["summary"]["failed"] += 1
+            elif status == "error":
                 results["summary"]["errors"] += 1
-            results["summary"]["total_checks"] += 1
-        
-        # Rule 4: Check non-negative prices (if price columns exist)
-        if rules.get("non_negative_prices"):
-            price_columns = [col for col in ["cash_price", "gross_price"] if col in df.columns]
-            
-            if price_columns:
-                try:
-                    # Convert price columns to numeric
-                    df_numeric = df
-                    for col in price_columns:
-                        df_numeric = df_numeric.with_columns(
-                            pl.col(col).cast(pl.Float64, strict=False)
-                        )
-                    
-                    # Count rows with negative prices
-                    negative_prices = 0
-                    for col in price_columns:
-                        negative_prices += df_numeric.filter(
-                            pl.col(col) < 0
-                        ).height
-                    
-                    if negative_prices > 0:
-                        results["checks"].append({
-                            "rule": "non_negative_prices",
-                            "status": "fail",
-                            "message": f"{negative_prices} rows have negative prices",
-                            "details": {"negative_rows": negative_prices, "price_columns": price_columns}
-                        })
-                        results["summary"]["failed"] += 1
-                    else:
-                        results["checks"].append({
-                            "rule": "non_negative_prices",
-                            "status": "pass",
-                            "message": "All prices are non-negative",
-                            "details": {"price_columns": price_columns}
-                        })
-                        results["summary"]["passed"] += 1
-                except Exception as e:
-                    results["checks"].append({
-                        "rule": "non_negative_prices",
-                        "status": "error",
-                        "message": f"Error checking non-negative prices: {str(e)}",
-                        "details": {"error": str(e)}
-                    })
-                    results["summary"]["errors"] += 1
-                results["summary"]["total_checks"] += 1
         
         return results
         
     except Exception as e:
         return {
             "timestamp": datetime.utcnow().isoformat() + "Z",
-            "rules_version": "v1.0.0",
+            "rules_version": "1.0.0",
             "file_path": parquet_path,
+            "profile": profile if profile else "unknown",
+            "profile_description": get_profile_description(profile) if profile else "Unknown",
+            "schema_ok": False,
             "error": f"Validation failed: {str(e)}",
             "checks": [],
             "summary": {
@@ -225,4 +754,3 @@ def run_rules(parquet_path: str, registry_path: str) -> Dict[str, Any]:
                 "errors": 1
             }
         }
-

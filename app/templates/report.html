@@ -123,6 +123,39 @@
             font-size: 0.9em;
             white-space: pre-wrap;
         }
+        .failing-rows {
+            margin-top: 10px;
+            padding: 10px;
+            background: #fff3cd;
+            border-left: 4px solid #ff9800;
+            border-radius: 4px;
+        }
+        .failing-rows-title {
+            font-weight: bold;
+            color: #856404;
+            margin-bottom: 8px;
+        }
+        .failing-rows-table {
+            width: 100%;
+            margin-top: 8px;
+            font-size: 0.85em;
+            border-collapse: collapse;
+            background: white;
+        }
+        .failing-rows-table th {
+            background: #856404;
+            color: white;
+            padding: 6px;
+            text-align: left;
+            font-size: 0.9em;
+        }
+        .failing-rows-table td {
+            padding: 6px;
+            border: 1px solid #ddd;
+        }
+        .failing-rows-table tr:nth-child(even) {
+            background: #f9f9f9;
+        }
         .footer {
             margin-top: 40px;
             padding-top: 20px;
@@ -138,6 +171,9 @@
             <h1>ClearCare Compliance Report</h1>
             <p class="subtitle">Run ID: {{ run_id }}</p>
             <p class="subtitle">Generated: {{ timestamp }}</p>
+            {% if csv_validation and csv_validation.profile %}
+            <p class="subtitle">Profile: <strong>{{ csv_validation.profile_description or csv_validation.profile }}</strong></p>
+            {% endif %}
         </div>
 
         <div class="summary">
@@ -203,6 +239,32 @@
                         <td>
                             {% if check.details %}
                             <div class="details">{{ check.details | tojson(indent=2) }}</div>
+                            
+                            {% if check.details.failing_rows and check.details.failing_rows | length > 0 %}
+                            <div class="failing-rows">
+                                <div class="failing-rows-title">
+                                    Sample Failing Rows ({{ check.details.failing_rows | length }} shown):
+                                </div>
+                                <table class="failing-rows-table">
+                                    <thead>
+                                        <tr>
+                                            {% for key in check.details.failing_rows[0].keys() %}
+                                            <th>{{ key }}</th>
+                                            {% endfor %}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for row in check.details.failing_rows %}
+                                        <tr>
+                                            {% for value in row.values() %}
+                                            <td>{{ value }}</td>
+                                            {% endfor %}
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                            {% endif %}
                             {% else %}
                             <em>No additional details</em>
                             {% endif %}
