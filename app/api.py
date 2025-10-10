@@ -15,10 +15,15 @@ from app.models import Run, RunStatus
 from app.jobs import enqueue_validation, get_job_status
 from app.csv_header_sniffer import find_header_row, extract_header
 
-# New package validators
-from clearcare_compliance.csv_validator import validate_csv as cc_validate_csv
-from clearcare_compliance.json_validator import validate_json as cc_validate_json
-from clearcare_compliance.reporters import to_json as cc_to_json
+# New package validators (with fallback)
+try:
+    from clearcare_compliance.csv_validator import validate_csv as cc_validate_csv
+    from clearcare_compliance.json_validator import validate_json as cc_validate_json
+    from clearcare_compliance.reporters import to_json as cc_to_json
+    PACKAGE_AVAILABLE = True
+except ImportError:
+    print("Warning: clearcare_compliance package not available, using fallback validators")
+    PACKAGE_AVAILABLE = False
 
 # Optional S3 (only used if creds are present & work)
 import boto3, botocore
@@ -346,48 +351,55 @@ async def validate_sync(run_id: str, session: Session) -> dict:
     # Validate CSV/Parquet if exists
     if os.path.exists(parquet_path):
         try:
-            # Use new package validator
-            local_raw_path = os.path.join(RAW_DIR, f"{run_id}__{run.filename if run else 'unknown'}")
-            if os.path.exists(local_raw_path):
-                csv_result = cc_validate_csv(local_raw_path)
-                validation_results["csv_validation"] = json.loads(cc_to_json(csv_result))
-                
-                # Update combined summary
-                csv_counts = csv_result.counts()
-                validation_results["combined_summary"]["csv_ok"] = csv_result.ok
-                validation_results["combined_summary"]["total_checks"] += sum(csv_counts.values())
-                validation_results["combined_summary"]["passed"] += 0 if csv_counts["errors"] > 0 else 1
-                validation_results["combined_summary"]["failed"] += csv_counts["errors"]
-                validation_results["combined_summary"]["errors"] += csv_counts["errors"]
-                
-                # Preserve existing cms_csv_ok for backward compatibility
-                validation_results["combined_summary"]["cms_csv_ok"] = csv_result.ok
-                validation_results["combined_summary"]["profile"] = csv_result.file_type
-            else:
-                # Fallback to old validator if raw file not found
-                from app.validator_utils import parquet_columns
-                actual_cols = parquet_columns(parquet_path)
-                print(f"[DEBUG] /validate - run_id: {run_id}, parquet_path: {parquet_path}, len(actual_cols): {len(actual_cols)}, detected_profile: {profile}")
-                
-                registry_path = os.path.join(os.path.dirname(__file__), "..", "rules", "registry.yaml")
-                if os.path.exists(registry_path):
-                    from app.validator import run_rules
-                    csv_result = run_rules(parquet_path, registry_path, profile=profile)
-                    validation_results["csv_validation"] = csv_result
-                    
-                    # Extract CMS CSV information from validator results
-                    if csv_result.get("cms_csv"):
-                        validation_results["cms_csv"] = csv_result["cms_csv"]
-                        validation_results["combined_summary"]["cms_csv_ok"] = bool(csv_result["cms_csv"].get("ok"))
-                        if csv_result["cms_csv"].get("layout"):
-                            validation_results["combined_summary"]["profile"] = f"cms_csv_{csv_result['cms_csv'].get('layout')}"
+            if PACKAGE_AVAILABLE:
+                # Use new package validator
+                local_raw_path = os.path.join(RAW_DIR, f"{run_id}__{run.filename if run else 'unknown'}")
+                if os.path.exists(local_raw_path):
+                    csv_result = cc_validate_csv(local_raw_path)
+                    validation_results["csv_validation"] = json.loads(cc_to_json(csv_result))
                     
                     # Update combined summary
-                    csv_summary = csv_result.get("summary", {})
-                    validation_results["combined_summary"]["total_checks"] += csv_summary.get("total_checks", 0)
-                    validation_results["combined_summary"]["passed"] += csv_summary.get("passed", 0)
-                    validation_results["combined_summary"]["failed"] += csv_summary.get("failed", 0)
-                    validation_results["combined_summary"]["errors"] += csv_summary.get("errors", 0)
+                    csv_counts = csv_result.counts()
+                    validation_results["combined_summary"]["csv_ok"] = csv_result.ok
+                    validation_results["combined_summary"]["total_checks"] += sum(csv_counts.values())
+                    validation_results["combined_summary"]["passed"] += 0 if csv_counts["errors"] > 0 else 1
+                    validation_results["combined_summary"]["failed"] += csv_counts["errors"]
+                    validation_results["combined_summary"]["errors"] += csv_counts["errors"]
+                    
+                    # Preserve existing cms_csv_ok for backward compatibility
+                    validation_results["combined_summary"]["cms_csv_ok"] = csv_result.ok
+                    validation_results["combined_summary"]["profile"] = csv_result.file_type
+                else:
+                    raise Exception("Raw file not found for package validator")
+            else:
+                raise Exception("Package not available")
+                
+        except Exception as e:
+            print(f"[DEBUG] Using fallback validator: {e}")
+            # Fallback to old validator
+            from app.validator_utils import parquet_columns
+            actual_cols = parquet_columns(parquet_path)
+            print(f"[DEBUG] /validate - run_id: {run_id}, parquet_path: {parquet_path}, len(actual_cols): {len(actual_cols)}, detected_profile: {profile}")
+            
+            registry_path = os.path.join(os.path.dirname(__file__), "..", "rules", "registry.yaml")
+            if os.path.exists(registry_path):
+                from app.validator import run_rules
+                csv_result = run_rules(parquet_path, registry_path, profile=profile)
+                validation_results["csv_validation"] = csv_result
+                
+                # Extract CMS CSV information from validator results
+                if csv_result.get("cms_csv"):
+                    validation_results["cms_csv"] = csv_result["cms_csv"]
+                    validation_results["combined_summary"]["cms_csv_ok"] = bool(csv_result["cms_csv"].get("ok"))
+                    if csv_result["cms_csv"].get("layout"):
+                        validation_results["combined_summary"]["profile"] = f"cms_csv_{csv_result['cms_csv'].get('layout')}"
+                
+                # Update combined summary
+                csv_summary = csv_result.get("summary", {})
+                validation_results["combined_summary"]["total_checks"] += csv_summary.get("total_checks", 0)
+                validation_results["combined_summary"]["passed"] += csv_summary.get("passed", 0)
+                validation_results["combined_summary"]["failed"] += csv_summary.get("failed", 0)
+                validation_results["combined_summary"]["errors"] += csv_summary.get("errors", 0)
         except Exception as e:
             validation_results["csv_validation"] = {
                 "error": f"CSV validation failed: {str(e)}",
@@ -398,21 +410,34 @@ async def validate_sync(run_id: str, session: Session) -> dict:
     # Validate JSON if exists
     if os.path.exists(json_path):
         try:
-            # Use new package validator
-            with open(json_path, 'r') as f:
-                json_text = f.read()
-            json_result = cc_validate_json(json_text)
-            validation_results["json_schema"] = json.loads(cc_to_json(json_result))
-            
-            # Update combined summary
-            json_counts = json_result.counts()
-            validation_results["combined_summary"]["schema_ok"] = json_result.ok
-            validation_results["combined_summary"]["total_checks"] += sum(json_counts.values())
-            validation_results["combined_summary"]["passed"] += 0 if json_counts["errors"] > 0 else 1
-            validation_results["combined_summary"]["failed"] += json_counts["errors"]
-            validation_results["combined_summary"]["errors"] += json_counts["errors"]
+            if PACKAGE_AVAILABLE:
+                # Use new package validator
+                with open(json_path, 'r') as f:
+                    json_text = f.read()
+                json_result = cc_validate_json(json_text)
+                validation_results["json_schema"] = json.loads(cc_to_json(json_result))
+                
+                # Update combined summary
+                json_counts = json_result.counts()
+                validation_results["combined_summary"]["schema_ok"] = json_result.ok
+                validation_results["combined_summary"]["total_checks"] += sum(json_counts.values())
+                validation_results["combined_summary"]["passed"] += 0 if json_counts["errors"] > 0 else 1
+                validation_results["combined_summary"]["failed"] += json_counts["errors"]
+                validation_results["combined_summary"]["errors"] += json_counts["errors"]
+            else:
+                # Fallback to old validator
+                from app.json_validator import run_json_schema_validation
+                json_result = run_json_schema_validation(json_path)
+                validation_results["json_validation"] = json_result
+                
+                # Update combined summary
+                json_summary = json_result.get("summary", {})
+                validation_results["combined_summary"]["total_checks"] += json_summary.get("total_schemas_checked", 0)
+                validation_results["combined_summary"]["passed"] += json_summary.get("passed", 0)
+                validation_results["combined_summary"]["failed"] += json_summary.get("failed", 0)
+                validation_results["combined_summary"]["errors"] += json_summary.get("errors", 0)
         except Exception as e:
-            validation_results["json_schema"] = {
+            validation_results["json_validation"] = {
                 "error": f"JSON validation failed: {str(e)}",
                 "summary": {"total_schemas_checked": 0, "passed": 0, "failed": 0, "errors": 1}
             }

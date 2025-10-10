@@ -16,3 +16,7 @@ sqlalchemy>=2.0
 rq>=1.15
 redis>=5
 psycopg2-binary==2.9.9
+pandas>=2.2
+rich>=13.7
+click>=8.1
+python-dateutil>=2.9
