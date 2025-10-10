@@ -15,41 +15,128 @@ Requires-Dist: click>=8.1
 
 ## ClearCare Compliance - CMS HPT Validator
 
-### CLI:
+A reusable Python package for validating Hospital Price Transparency files exactly like CMS, supporting both JSON and CSV (Tall/Wide) formats.
+
+### Package Structure
+```
+clearcare_compliance/
+├── __init__.py
+├── cli.py                      # CLI entry point
+├── types.py                    # ValidationResult, Finding
+├── detectors.py                # File type detection
+├── json_validator.py           # JSON validation
+├── csv_validator.py            # CSV validation
+├── csv_specs.py                # CSV specifications
+├── reporters.py                # Output formatting
+└── schemas/                    # Data files only
+    ├── json/
+    │   └── VERSION.json        # Schema manifest
+    └── csv/
+        ├── preamble.yaml
+        ├── tall.yaml
+        └── wide.yaml
+```
+
+### CLI Usage
 ```bash
-# install dev
+# Install the package
 pip install -e .
 
-# validate any file (auto-detect JSON vs CSV)
+# Validate any file (auto-detect JSON vs CSV)
 clearcare-validate path/to/standardcharges.csv --format human
 clearcare-validate path/to/hospital.json --format json > report.json
 clearcare-validate path/to/file.csv --format csv --out findings.csv
+
+# Example with test file
+clearcare-validate test_hospital.csv --format human
 ```
 
-### Schemas:
-- Vendored under `clearcare_compliance/schemas/json/` with a `VERSION.json` manifest.
-- Auto-updated by `.github/workflows/update-cms-schemas.yml` which opens a PR
+### API Integration
+```python
+# Import validators directly
+from clearcare_compliance.csv_validator import validate_csv
+from clearcare_compliance.json_validator import validate_json
+from clearcare_compliance.reporters import to_json, to_human
 
-### CSV:
-- Supports CMS Tall and Wide layouts.
-- Validates 3-row preamble (Row1 labels, Row2 values) and Row3 headers.
-- Enforces core data rules (coding present, description present, payer|plan columns for wide, drug unit/type pairing, estimated amount recommendation when percentage/algorithm used).
+# Use in FastAPI or other applications
+csv_result = validate_csv("path/to/file.csv")
+json_output = to_json(csv_result)
+```
 
-### Integrations:
-- This package is web-ready: import `clearcare_compliance.cli` logic inside FastAPI to reuse `validate_json` / `validate_csv`.
+### Features
 
-### Wire up & sanity check
+#### JSON Validation
+- Validates against CMS Hospital Price Transparency schemas
+- Auto-detects schema type (in-network-rates, allowed-amounts, provider-reference)
+- Reads from vendored schemas in package or falls back to `rules/cms/json/`
+- Provides detailed error messages with field paths
+
+#### CSV Validation
+- Supports CMS Tall and Wide layouts
+- Validates 3-row preamble (Row1 labels, Row2 values, Row3 headers)
+- Handles both strict CMS format and flexible hospital metadata format
+- Enforces core data rules:
+  - Required headers per layout
+  - Description present
+  - Coding present (billing_code_type + billing_code)
+  - Payer|plan columns for wide layout
+  - Drug unit/type pairing
+  - Estimated amount recommendations
+
+#### Error Handling
+- UTF-8 encoding validation
+- Graceful handling of parsing errors
+- Human-readable error messages with line numbers
+- Expected vs Actual comparisons
+
+### Schemas & Vendoring
+- Vendored under `clearcare_compliance/schemas/json/` with a `VERSION.json` manifest
+- Auto-updated by `.github/workflows/update-cms-schemas.yml` which opens PRs
+- Run vendor script locally: `python scripts/vendor_cms_assets.py`
+
+### FastAPI Integration
+The package is already integrated with the existing FastAPI application:
+- `app/api.py` imports and uses the new validators
+- Maintains backward compatibility with existing frontend
+- Preserves all existing validation response formats
+- Adds new validation capabilities (encoding, preamble metadata)
+
+### Testing
 ```bash
-# Run: pip install -e .
-# Run vendor once locally: python scripts/vendor_cms_assets.py (this will populate schemas/json)
-# Try examples (any hospital JSON that follows CMS schema; and a small CSV like the test).
-# clearcare-validate yourfile.csv --format human
-# Commit all changes.
+# Run all tests
+pytest tests/ -v
+
+# Run package-specific tests
+pytest tests/test_clearcare_package.py -v
+
+# Run CLI detection tests
+pytest tests/test_cli_detects.py -v
 ```
 
-### Notes / TODOs for follow-ups (leave as code comments)
-- Expand "schemas/csv/*.yaml" to mirror CMS data dictionary fully (lists of required/optional headers)
-- Map more JSONSchema error details to nicer messages (enums lists, formats).
-- If desired, integrate with your existing FastAPI ("app/") by calling `validate_json`/`validate_csv`
-- Add more tests with CMS's example files (vendor a few into "tests/data/" in a future PR).
-- Add XML support only if CMS publishes hospital XML or you decide to support it.
+### Development Setup
+```bash
+# Install in development mode
+pip install -e .
+
+# Run vendor script to populate schemas
+python scripts/vendor_cms_assets.py
+
+# Test CLI with sample file
+clearcare-validate test_file.csv --format human
+
+# Test FastAPI integration
+python -c "from app.api import app; print('FastAPI app imported successfully')"
+```
+
+### Deployment Notes
+- Package structure is now flat (no nested directories)
+- All existing FastAPI code remains intact
+- Frontend integration preserved
+- Database schema unchanged
+- New validation capabilities added seamlessly
+
+### Future Enhancements
+- Expand CSV schemas to mirror CMS data dictionary fully
+- Add more JSON schema error message improvements
+- Include CMS example files in test suite
+- Add XML support if CMS publishes hospital XML schemas

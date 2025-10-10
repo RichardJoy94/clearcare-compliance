@@ -76,8 +76,28 @@ def find_preamble_and_header_row(text: str, max_scan: int=30) -> Tuple[int, Dict
             return j, {}, [c.lower() for c in cells]
     return 0, {}, []
 
+def _map_headers_to_standard(headers: List[str]) -> List[str]:
+    """Map various header formats to standard CMS headers."""
+    mapped = []
+    for header in headers:
+        # Map common variations to standard headers
+        if "code" in header and "type" in header:
+            mapped.append("billing_code_type")
+        elif "code" in header and "type" not in header:
+            mapped.append("billing_code")
+        else:
+            mapped.append(header)
+    return list(set(mapped))  # Remove duplicates
+
 def _require_headers(headers: List[str], required: List[str]) -> List[str]:
+    # First try exact match
     missing = [h for h in required if h not in headers]
+    if not missing:
+        return missing
+    
+    # Then try with header mapping
+    mapped_headers = _map_headers_to_standard(headers)
+    missing = [h for h in required if h not in mapped_headers]
     return missing
 
 def validate_csv(path: str) -> ValidationResult:
@@ -109,27 +129,60 @@ def validate_csv(path: str) -> ValidationResult:
         ))
     
     # Validate preamble metadata (required labels)
-    required_labels = ["mrf date", "cms template version"]
-    missing_labels = [label for label in required_labels if label not in preamble]
-    if missing_labels:
+    # Accept either CMS format or hospital metadata format
+    cms_labels = ["mrf date", "cms template version"]
+    hospital_labels = ["hospital name", "last updated", "version"]
+    
+    has_cms_format = any(label in preamble for label in cms_labels)
+    has_hospital_format = any(label in preamble for label in hospital_labels)
+    
+    if not has_cms_format and not has_hospital_format:
         res.ok = False
         res.findings.append(Finding(
             severity="warning",
             rule="csv.preamble.required_labels",
-            message=f"Missing recommended preamble labels: {missing_labels}",
-            row=1
+            message="Missing recommended preamble labels. Expected CMS format ('mrf date', 'cms template version') or hospital format ('hospital name', 'last updated', 'version')",
+            row=1,
+            expected="CMS or hospital preamble labels",
+            actual="No recognized preamble labels found"
+        ))
+    elif not has_cms_format:
+        # Hospital format detected, suggest CMS format for compliance
+        res.findings.append(Finding(
+            severity="info",
+            rule="csv.preamble.format_suggestion",
+            message="Hospital metadata format detected. Consider using CMS format ('mrf date', 'cms template version') for better compliance",
+            row=1,
+            expected="CMS format",
+            actual="Hospital format"
         ))
     # structural header checks
     if layout == "csv_tall":
         missing = _require_headers(headers_lower, TALL["required_headers"])
         if missing:
             res.ok = False
-            res.findings.append(Finding(severity="error", rule="csv.headers.required", message=f"Missing required headers: {missing}", row=hdr_idx+1))
+            res.findings.append(Finding(
+                severity="error", 
+                rule="csv.headers.required", 
+                message=f"Missing required headers: {missing}", 
+                row=hdr_idx+1,
+                expected=str(missing),
+                actual=str(headers_lower[:10]) + ("..." if len(headers_lower) > 10 else ""),
+                field="headers"
+            ))
     else:
         missing = _require_headers(headers_lower, WIDE["base_required_headers"])
         if missing:
             res.ok = False
-            res.findings.append(Finding(severity="error", rule="csv.headers.required", message=f"Missing base headers: {missing}", row=hdr_idx+1))
+            res.findings.append(Finding(
+                severity="error", 
+                rule="csv.headers.required", 
+                message=f"Missing base headers: {missing}", 
+                row=hdr_idx+1,
+                expected=str(missing),
+                actual=str(headers_lower[:10]) + ("..." if len(headers_lower) > 10 else ""),
+                field="headers"
+            ))
         # must have at least one payer|plan column
         sep = WIDE["payer_plan_separator"]
         if not any(sep in h for h in headers_lower):
@@ -158,13 +211,39 @@ def validate_csv(path: str) -> ValidationResult:
                 res.ok=False; res.findings.append(Finding(severity="error", rule="csv.description.present", message="Description required", row=line_no(i), field="description"))
     # coding present
     if (layout == "csv_tall" and TALL["rules"]["require_coding"]) or (layout=="csv_wide" and WIDE["rules"]["require_coding"]):
-        need = [c for c in ("billing_code_type","billing_code") if c in df.columns]
-        if len(need)<2:
-            res.ok=False; res.findings.append(Finding(severity="error", rule="csv.coding.present", message="billing_code_type and billing_code required in headers", row=hdr_idx+1))
+        # Find columns that map to billing_code_type and billing_code
+        code_type_col = None
+        code_col = None
+        
+        for col in df.columns:
+            col_lower = col.lower()
+            if "code" in col_lower and "type" in col_lower:
+                code_type_col = col
+            elif "code" in col_lower and "type" not in col_lower:
+                code_col = col
+        
+        if not code_type_col or not code_col:
+            res.ok = False
+            res.findings.append(Finding(
+                severity="error", 
+                rule="csv.coding.present", 
+                message=f"Missing coding columns. Found: {[col for col in df.columns if 'code' in col.lower()]}, Expected: columns with 'code' and 'code' + 'type'", 
+                row=hdr_idx+1,
+                expected="billing_code_type, billing_code",
+                actual=str([col for col in df.columns if 'code' in col.lower()]),
+                field="headers"
+            ))
         else:
-            bad = (df["billing_code_type"].str.strip()=="") | (df["billing_code"].str.strip()=="")
+            bad = (df[code_type_col].str.strip()=="") | (df[code_col].str.strip()=="")
             for i in df[bad].index[:50]:
-                res.ok=False; res.findings.append(Finding(severity="error", rule="csv.coding.present", message="Code type and code required", row=line_no(i)))
+                res.ok = False
+                res.findings.append(Finding(
+                    severity="error", 
+                    rule="csv.coding.present", 
+                    message="Coding fields required", 
+                    row=line_no(i), 
+                    field=f"{code_type_col},{code_col}"
+                ))
     # Tall: if percentage or algorithm present -> require estimated_allowed_amount
     if layout=="csv_tall" and TALL["rules"]["require_estimated_when_percent_or_algorithm"]:
         has_pct_col = "standard_charge_percentage" in df.columns

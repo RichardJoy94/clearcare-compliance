@@ -1,5 +1,6 @@
 README_CLEARCARE.md
 pyproject.toml
+setup.py
 clearcare_compliance/__init__.py
 clearcare_compliance/cli.py
 clearcare_compliance/csv_specs.py
@@ -18,6 +19,7 @@ clearcare_compliance/schemas/csv/preamble.yaml
 clearcare_compliance/schemas/csv/tall.yaml
 clearcare_compliance/schemas/csv/wide.yaml
 clearcare_compliance/schemas/json/VERSION.json
+tests/test_clearcare_package.py
 tests/test_cli_detects.py
 tests/test_cms_csv_layout.py
 tests/test_csv_header_sniffer.py
