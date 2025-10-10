@@ -1,0 +1,32 @@
+name: Update CMS Schemas
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Vendor CMS assets
+        run: |
+          python -m pip install --upgrade pip
+          python scripts/vendor_cms_assets.py
+      - name: Create PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "chore: vendor latest CMS Hospital Price Transparency JSON schemas"
+          branch: chore/vendor-cms-schemas
+          title: "Vendor latest CMS HPT JSON schemas"
+          body: "Automated vendoring of latest CMS schemas. Please review CI."
+          labels: auto-vendor

@@ -1,0 +1,2 @@
+[console_scripts]
+clearcare-validate = clearcare_compliance.cli:main

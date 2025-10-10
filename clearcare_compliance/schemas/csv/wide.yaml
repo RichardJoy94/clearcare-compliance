@@ -1,0 +1,9 @@
+base_required_headers:
+  - billing_code_type
+  - billing_code
+  - description
+payer_plan_separator: "|"
+rules:
+  require_description: true
+  require_coding: true
+  payer_plan_columns_must_exist: true

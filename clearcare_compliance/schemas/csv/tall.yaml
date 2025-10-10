@@ -1,0 +1,22 @@
+required_headers:
+  - billing_code_type
+  - billing_code
+  - description
+  - standard_charge        # negotiated (dollars)
+  - payer_name
+  - plan_name
+optional_headers:
+  - discounted_cash_price
+  - gross_charge
+  - deidentified_min
+  - deidentified_max
+  - standard_charge_percentage
+  - standard_charge_algorithm
+  - estimated_allowed_amount
+  - drug_unit_of_measurement
+  - drug_type_of_measurement
+rules:
+  require_description: true
+  require_coding: true
+  require_estimated_when_percent_or_algorithm: true
+  pair_drug_unit_and_type: true

@@ -1,0 +1,55 @@
+Metadata-Version: 2.4
+Name: clearcare-compliance
+Version: 0.1.0
+Summary: CMS Hospital Price Transparency validator (JSON + CSV Tall/Wide) with human-readable reports.
+Author-email: ClearCare <dev@clearcare.example>
+License-Expression: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: jsonschema>=4.19
+Requires-Dist: pandas>=2.2
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: rich>=13.7
+Requires-Dist: python-dateutil>=2.9
+Requires-Dist: click>=8.1
+
+## ClearCare Compliance - CMS HPT Validator
+
+### CLI:
+```bash
+# install dev
+pip install -e .
+
+# validate any file (auto-detect JSON vs CSV)
+clearcare-validate path/to/standardcharges.csv --format human
+clearcare-validate path/to/hospital.json --format json > report.json
+clearcare-validate path/to/file.csv --format csv --out findings.csv
+```
+
+### Schemas:
+- Vendored under `clearcare_compliance/schemas/json/` with a `VERSION.json` manifest.
+- Auto-updated by `.github/workflows/update-cms-schemas.yml` which opens a PR
+
+### CSV:
+- Supports CMS Tall and Wide layouts.
+- Validates 3-row preamble (Row1 labels, Row2 values) and Row3 headers.
+- Enforces core data rules (coding present, description present, payer|plan columns for wide, drug unit/type pairing, estimated amount recommendation when percentage/algorithm used).
+
+### Integrations:
+- This package is web-ready: import `clearcare_compliance.cli` logic inside FastAPI to reuse `validate_json` / `validate_csv`.
+
+### Wire up & sanity check
+```bash
+# Run: pip install -e .
+# Run vendor once locally: python scripts/vendor_cms_assets.py (this will populate schemas/json)
+# Try examples (any hospital JSON that follows CMS schema; and a small CSV like the test).
+# clearcare-validate yourfile.csv --format human
+# Commit all changes.
+```
+
+### Notes / TODOs for follow-ups (leave as code comments)
+- Expand "schemas/csv/*.yaml" to mirror CMS data dictionary fully (lists of required/optional headers)
+- Map more JSONSchema error details to nicer messages (enums lists, formats).
+- If desired, integrate with your existing FastAPI ("app/") by calling `validate_json`/`validate_csv`
+- Add more tests with CMS's example files (vendor a few into "tests/data/" in a future PR).
+- Add XML support only if CMS publishes hospital XML or you decide to support it.

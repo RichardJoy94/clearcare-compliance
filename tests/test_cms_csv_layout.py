@@ -7,12 +7,12 @@ def _write(path: Path, text: str):
 
 def test_tall_with_preamble_and_headers(tmp_path: Path):
     # Row1 labels, Row2 values, Row3 headers, Row4 data
-    csv_text = textwrap.dedent(\"\"\"\
+    csv_text = textwrap.dedent("""\
     MRF Date,CMS Template Version,Other
     2025-01-01,2.0,foo
     billing_code_type,billing_code,description,standard_charge,payer
     CPT,99213,Office Visit,130.00,Aetna
-    \"\"\")
+    """)
     csvp = tmp_path/"tall.csv"; _write(csvp, csv_text)
     # Make a tiny parquet with matching schema_cols
     df = pl.DataFrame({
@@ -31,12 +31,12 @@ def test_tall_with_preamble_and_headers(tmp_path: Path):
     assert res["structure"]["ok"] is True
 
 def test_wide_headers(tmp_path: Path):
-    csv_text = textwrap.dedent(\"\"\"\
+    csv_text = textwrap.dedent("""\
     MRF Date,CMS Template Version
     2025-01-01,2.0
     billing_code_type,billing_code,description,Aetna|Silver HMO
     CPT,99213,Office Visit,118.5
-    \"\"\")
+    """)
     csvp = tmp_path/"wide.csv"; _write(csvp, csv_text)
     df = pl.DataFrame({"billing_code_type":["CPT"],"billing_code":["99213"],"description":["Office Visit"],"Aetna|Silver HMO":[118.5]})
     pq = tmp_path/"wide.parquet"; df.write_parquet(pq)

@@ -1,0 +1,7 @@
+required_labels:
+  - mrf date
+  - cms template version
+optional_labels:
+  - hospital name
+  - location
+  - licensure
