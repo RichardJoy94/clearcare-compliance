@@ -88,14 +88,27 @@ def _map_headers_to_standard(headers: List[str], layout: str = "csv_wide") -> Li
         header_lower = header.lower()
         mapped_header = None
         
-        # Check each flexible mapping
+        # Check each flexible mapping - prioritize exact matches first, then longest matches
+        best_match = None
+        best_match_length = 0
+        
         for standard_field, variations in flexible_mappings.items():
             for variation in variations:
-                if variation.lower() in header_lower or header_lower in variation.lower():
+                variation_lower = variation.lower()
+                # Exact match first
+                if variation_lower == header_lower:
                     mapped_header = standard_field
                     break
+                # Then substring match - prefer longer matches
+                elif variation_lower in header_lower and len(variation_lower) > best_match_length:
+                    best_match = standard_field
+                    best_match_length = len(variation_lower)
             if mapped_header:
                 break
+        
+        # Use best match if no exact match found
+        if not mapped_header and best_match:
+            mapped_header = best_match
         
         # If no mapping found, keep original header
         if not mapped_header:
@@ -103,7 +116,7 @@ def _map_headers_to_standard(headers: List[str], layout: str = "csv_wide") -> Li
             
         mapped.append(mapped_header)
     
-    return list(set(mapped))  # Remove duplicates
+    return mapped  # Keep order and don't remove duplicates
 
 def _require_headers(headers: List[str], required: List[str], layout: str = "csv_wide") -> List[str]:
     # First try exact match
@@ -194,7 +207,7 @@ def _validate_hospital_info(preamble: Dict[str, str], res: ValidationResult) -> 
             rule="csv.hospital_info.present",
             message=f"Hospital information found: {found_all}",
             row=1,
-            expected="Hospital information",
+            expected="Hospital name, location, address, license information",
             actual=f"Found: {found_all}"
         ))
 
@@ -218,12 +231,7 @@ def _validate_standard_charges(headers: List[str], layout: str, res: ValidationR
         if field in mapped_headers:
             found_fields.append(field)
         else:
-            # Check if any flexible mapping exists
-            field_mappings = flexible_mappings.get(field, [])
-            if any(any(mapping.lower() in header.lower() for header in headers) for mapping in field_mappings):
-                found_fields.append(field)
-            else:
-                missing_fields.append(field)
+            missing_fields.append(field)
     
     if missing_fields:
         res.findings.append(Finding(
@@ -264,12 +272,7 @@ def _validate_item_service_info(headers: List[str], layout: str, res: Validation
         if field in mapped_headers:
             found_fields.append(field)
         else:
-            # Check flexible mappings
-            field_mappings = flexible_mappings.get(field, [])
-            if any(any(mapping.lower() in header.lower() for header in headers) for mapping in field_mappings):
-                found_fields.append(field)
-            else:
-                missing_fields.append(field)
+            missing_fields.append(field)
     
     if missing_fields:
         res.findings.append(Finding(
@@ -301,12 +304,7 @@ def _validate_coding_info(headers: List[str], layout: str, res: ValidationResult
         if field in mapped_headers:
             found_fields.append(field)
         else:
-            # Check flexible mappings
-            field_mappings = flexible_mappings.get(field, [])
-            if any(any(mapping.lower() in header.lower() for header in headers) for mapping in field_mappings):
-                found_fields.append(field)
-            else:
-                missing_fields.append(field)
+            missing_fields.append(field)
     
     if missing_fields:
         res.ok = False
@@ -450,14 +448,17 @@ def validate_csv(path: str) -> ValidationResult:
             ))
         else:
             bad = (df[code_type_col].str.strip()=="") | (df[code_col].str.strip()=="")
-            for i in df[bad].index[:50]:
+            if bad.any():
+                bad_count = bad.sum()
                 res.ok = False
                 res.findings.append(Finding(
                     severity="error", 
                     rule="csv.coding.present", 
-                    message="Coding fields required", 
-                    row=line_no(i), 
-                    field=f"{code_type_col},{code_col}"
+                    message=f"Missing coding data in {bad_count} rows. Coding fields are required for all rows.", 
+                    row=hdr_idx+1, 
+                    field=f"{code_type_col},{code_col}",
+                    expected="Non-empty coding values",
+                    actual=f"{bad_count} rows with empty coding fields"
                 ))
     # Tall: if percentage or algorithm present -> require estimated_allowed_amount
     if layout=="csv_tall" and TALL["rules"]["require_estimated_when_percent_or_algorithm"]:

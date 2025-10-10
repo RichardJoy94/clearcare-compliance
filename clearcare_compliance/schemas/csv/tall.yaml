@@ -10,7 +10,6 @@ standard_charges:
     - payer_specific_negotiated_charge_percentage
     - payer_specific_negotiated_charge_algorithm
     - estimated_allowed_amount
-    - additional_generic_notes
     - additional_payer_specific_notes
     - de_identified_minimum_negotiated_charge
     - de_identified_maximum_negotiated_charge
@@ -32,18 +31,17 @@ coding_info:
 
 # Flexible column mappings
 flexible_mappings:
-  billing_accounting_code:
-    - "code"
-    - "billing_code"
-    - "code|1"
-    - "accounting_code"
-    - "procedure_code"
   code_type:
-    - "code_type"
-    - "type"
     - "code|1|type"
+    - "code_type"
     - "billing_code_type"
     - "code_category"
+  billing_accounting_code:
+    - "code|1"
+    - "code"
+    - "billing_code"
+    - "accounting_code"
+    - "procedure_code"
   gross_charge:
     - "gross"
     - "gross_charge"
@@ -54,6 +52,40 @@ flexible_mappings:
     - "discounted_cash"
     - "standard_charge|discounted_cash"
     - "cash_price"
+  payer_specific_negotiated_charge_dollar:
+    - "standard_charge|negotiated_dollar"
+    - "negotiated_dollar"
+    - "negotiated_charge"
+    - "payer_negotiated"
+    - "negotiated_amount"
+  payer_specific_negotiated_charge_percentage:
+    - "standard_charge|negotiated_percentage"
+    - "negotiated_percentage"
+    - "percentage_charge"
+    - "payer_percentage"
+  payer_specific_negotiated_charge_algorithm:
+    - "standard_charge|negotiated_algorithm"
+    - "negotiated_algorithm"
+    - "algorithm_charge"
+    - "payer_algorithm"
+  estimated_allowed_amount:
+    - "estimated_amount"
+    - "estimated_allowed_amount"
+    - "est_allowed_amount"
+    - "estimated_allowed_dollars"
+    - "allowed_amount"
+  additional_payer_specific_notes:
+    - "additional_generic_notes"
+    - "additional_notes"
+    - "payer_notes"
+    - "notes"
+    - "generic_notes"
+  standard_charge_method:
+    - "standard_charge | methodology"
+    - "standard_charge_methodology"
+    - "methodology"
+    - "charge_method"
+    - "pricing_method"
   de_identified_minimum_negotiated_charge:
     - "min"
     - "minimum"

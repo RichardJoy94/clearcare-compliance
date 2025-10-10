@@ -1,0 +1,69 @@
+{
+  "run_id": "a2e4a630-368e-4a02-b5ab-d04fa259891d",
+  "timestamp": "2025-10-10T04:10:50.871810Z",
+  "csv_validation": {
+    "ok": true,
+    "file_type": "csv_wide",
+    "schema_version": "CSV-Template",
+    "preamble": {
+      "hospital_name": "Maimonides Midwood Community Hospital",
+      "last_updated_on": "4/25/2025",
+      "version": "4.0.0",
+      "hospital_location": "Maimonides Midwood Community Hospital |  Maimonides Midwood Community Hospital Infusion Center",
+      "hospital_address": "2525 Kings Highway, Brooklyn, NY 11229 | 2812 Kings Highway, Brooklyn, NY 11229",
+      "license_number|ny": "7001008|NY",
+      "to the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 cfr 180.50, and the information encoded is true, accurate, and complete as of the date indicated.": "TRUE"
+    },
+    "summary": {
+      "rows": 109844,
+      "columns": [
+        "code|1",
+        "code|1|type",
+        "description",
+        "plan_name",
+        "payer_name",
+        "setting",
+        "standard_charge|gross",
+        "standard_charge|discounted_cash",
+        "standard_charge|negotiated_dollar",
+        "estimated_amount",
+        "standard_charge|min",
+        "standard_charge|max",
+        "standard_charge|negotiated_algorithm",
+        "standard_charge|negotiated_percentage",
+        "drug_unit_of_measurement",
+        "drug_type_of_measurement",
+        "modifiers",
+        "standard_charge | methodology",
+        "additional_generic_notes"
+      ]
+    },
+    "counts": {
+      "errors": 0,
+      "warnings": 0,
+      "info": 1
+    },
+    "findings": [
+      {
+        "severity": "info",
+        "rule": "csv.preamble.format_suggestion",
+        "message": "Hospital metadata format detected. Consider using CMS format ('mrf date', 'cms template version') for better compliance",
+        "row": 1,
+        "field": null,
+        "expected": "CMS format",
+        "actual": "Hospital format",
+        "context": {}
+      }
+    ]
+  },
+  "json_validation": null,
+  "combined_summary": {
+    "total_checks": 1,
+    "passed": 1,
+    "failed": 0,
+    "errors": 0,
+    "csv_ok": true,
+    "cms_csv_ok": true,
+    "profile": "csv_wide"
+  }
+}
