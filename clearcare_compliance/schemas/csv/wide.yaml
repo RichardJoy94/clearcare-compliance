@@ -1,8 +1,86 @@
+# Wide format has same requirements as tall, but with payer|plan columns
 base_required_headers:
   - billing_code_type
   - billing_code
   - description
 payer_plan_separator: "|"
+
+# Standard Charges (45 CFR 180.50(b)(2)(ii))
+standard_charges:
+  required_fields:
+    - gross_charge
+    - discounted_cash_price
+    - payer_name
+    - plan_name
+    - standard_charge_method
+    - payer_specific_negotiated_charge_dollar
+    - payer_specific_negotiated_charge_percentage
+    - payer_specific_negotiated_charge_algorithm
+    - estimated_allowed_amount
+    - additional_generic_notes
+    - additional_payer_specific_notes
+    - de_identified_minimum_negotiated_charge
+    - de_identified_maximum_negotiated_charge
+
+# Item & Service Information (45 CFR 180.50(b)(2)(iii))
+item_service_info:
+  required_fields:
+    - general_description
+    - setting
+    - drug_unit_of_measurement
+    - drug_type_of_measurement
+
+# Coding Information (45 CFR 180.50(b)(2)(iv))
+coding_info:
+  required_fields:
+    - billing_accounting_code
+    - code_type
+    - modifiers
+
+# Flexible column mappings (same as tall format)
+flexible_mappings:
+  billing_accounting_code:
+    - "code"
+    - "billing_code"
+    - "code|1"
+    - "accounting_code"
+    - "procedure_code"
+  code_type:
+    - "code_type"
+    - "type"
+    - "code|1|type"
+    - "billing_code_type"
+    - "code_category"
+  gross_charge:
+    - "gross"
+    - "gross_charge"
+    - "standard_charge|gross"
+    - "gross_price"
+  discounted_cash_price:
+    - "discounted"
+    - "discounted_cash"
+    - "standard_charge|discounted_cash"
+    - "cash_price"
+  de_identified_minimum_negotiated_charge:
+    - "min"
+    - "minimum"
+    - "standard_charge|min"
+    - "min_negotiated"
+    - "minimum_price"
+    - "minimum_amount"
+  de_identified_maximum_negotiated_charge:
+    - "max"
+    - "maximum"
+    - "standard_charge|max"
+    - "max_negotiated"
+    - "maximum_price"
+    - "maximum_amount"
+  general_description:
+    - "description"
+    - "desc"
+    - "item_description"
+    - "service_description"
+
 rules:
   require_description: true
   require_coding: true

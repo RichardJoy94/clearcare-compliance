@@ -1,3 +1,33 @@
+# MRF Information (45 CFR 180.50(b)(2)(i))
+mrf_info:
+  required_labels:
+    - mrf date
+    - cms template version
+    - affirmation statement
+  flexible_labels:
+    - last_updated_on
+    - version
+    - file_date
+    - template_version
+
+# Hospital Information (45 CFR 180.50(b)(2)(i)(A))
+hospital_info:
+  required_labels:
+    - hospital_name
+    - hospital_location
+    - hospital_address
+    - hospital_license
+  flexible_labels:
+    - hospital name
+    - hospital location
+    - hospital address
+    - license_number
+    - licensure_information
+    - hospital_location
+    - hospital_address
+    - license_number|ny
+
+# Legacy support
 required_labels:
   - mrf date
   - cms template version
